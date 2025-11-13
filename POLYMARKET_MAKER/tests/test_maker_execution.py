@@ -1,0 +1,164 @@
+import collections
+from typing import Deque, Dict, List
+
+import pytest
+
+import maker_execution as maker
+
+
+class StubAdapter:
+    def __init__(self, client):
+        self.client = client
+
+    def create_order(self, payload: Dict[str, float]) -> Dict[str, object]:
+        return self.client.create_order(payload)
+
+    def get_order_status(self, order_id: str) -> Dict[str, object]:
+        return self.client.get_order_status(order_id)
+
+
+class DummyClient:
+    def __init__(self, status_sequences: List[List[Dict[str, object]]]):
+        self._status_sequences: Deque[Deque[Dict[str, object]]] = collections.deque(
+            collections.deque(seq) for seq in status_sequences
+        )
+        self.order_status: Dict[str, Deque[Dict[str, object]]] = {}
+        self.created_orders: List[Dict[str, object]] = []
+        self.cancelled: List[str] = []
+        self._counter = 0
+
+    def create_order(self, payload: Dict[str, object]) -> Dict[str, object]:
+        self._counter += 1
+        order_id = f"order-{self._counter}"
+        status_seq = self._status_sequences.popleft() if self._status_sequences else collections.deque(
+            [{"status": "FILLED", "filledAmount": float(payload.get("size", 0.0)), "avgPrice": float(payload.get("price", 0.0))}]
+        )
+        self.order_status[order_id] = status_seq
+        entry = dict(payload)
+        entry["order_id"] = order_id
+        self.created_orders.append(entry)
+        return {"orderId": order_id}
+
+    def get_order_status(self, order_id: str) -> Dict[str, object]:
+        seq = self.order_status[order_id]
+        if len(seq) > 1:
+            return seq.popleft()
+        return seq[0]
+
+    def cancel_order(self, order_id: str) -> None:
+        self.cancelled.append(order_id)
+        seq = self.order_status.get(order_id)
+        if seq is not None:
+            last = seq[-1] if seq else {"filledAmount": 0.0}
+            seq.append({"status": "CANCELLED", "filledAmount": last.get("filledAmount", 0.0)})
+
+
+@pytest.fixture(autouse=True)
+def _patch_adapter(monkeypatch):
+    monkeypatch.setattr(maker, "ClobPolymarketAPI", lambda client: StubAdapter(client))
+    yield
+
+
+def _stream(values: List[float]):
+    dq = collections.deque(values)
+    last_val = values[-1] if values else None
+
+    def supplier():
+        nonlocal last_val
+        if dq:
+            last_val = dq.popleft()
+        return last_val
+
+    return supplier
+
+
+def test_maker_buy_immediate_fill():
+    client = DummyClient(
+        status_sequences=[[{"status": "FILLED", "filledAmount": 3.0, "avgPrice": 0.5}]]
+    )
+    result = maker.maker_buy_follow_bid(
+        client,
+        token_id="tkn",
+        target_size=3.0,
+        poll_sec=0.0,
+        min_order_size=0.0,
+        best_bid_fn=lambda: 0.5,
+        sleep_fn=lambda _: None,
+    )
+
+    assert result["status"] == "FILLED"
+    assert result["filled"] == pytest.approx(3.0)
+    assert result["avg_price"] == pytest.approx(0.5)
+    assert len(client.created_orders) == 1
+
+
+def test_maker_buy_reprices_on_bid_rise():
+    client = DummyClient(
+        status_sequences=[
+            [
+                {"status": "OPEN", "filledAmount": 0.0},
+                {"status": "OPEN", "filledAmount": 0.0},
+            ],
+            [
+                {"status": "FILLED", "filledAmount": 2.0, "avgPrice": 0.52},
+            ],
+        ]
+    )
+    bid_supplier = _stream([0.50, 0.52, 0.52])
+
+    result = maker.maker_buy_follow_bid(
+        client,
+        token_id="asset",
+        target_size=2.0,
+        poll_sec=0.0,
+        min_order_size=0.0,
+        best_bid_fn=bid_supplier,
+        sleep_fn=lambda _: None,
+    )
+
+    assert result["filled"] == pytest.approx(2.0)
+    assert client.cancelled, "Expected cancellation when bid moves higher"
+    first_order = client.created_orders[0]
+    assert first_order["price"] == pytest.approx(0.50, rel=0, abs=1e-9)
+
+
+def test_maker_buy_handles_missing_fill_amount_on_match():
+    client = DummyClient(status_sequences=[[{"status": "MATCHED"}]])
+
+    result = maker.maker_buy_follow_bid(
+        client,
+        token_id="asset",
+        target_size=5.0,
+        poll_sec=0.0,
+        min_order_size=0.0,
+        best_bid_fn=lambda: 0.5,
+        sleep_fn=lambda _: None,
+    )
+
+    assert result["status"] == "FILLED"
+    assert result["filled"] == pytest.approx(5.0)
+    assert client.created_orders, "expected order to be created"
+
+
+def test_maker_sell_waits_for_floor_before_order():
+    client = DummyClient(
+        status_sequences=[[{"status": "FILLED", "filledAmount": 1.5, "avgPrice": 0.72}]]
+    )
+    asks = _stream([0.65, 0.65, 0.72, 0.72])
+
+    result = maker.maker_sell_follow_ask_with_floor_wait(
+        client,
+        token_id="asset",
+        position_size=1.5,
+        floor_X=0.70,
+        poll_sec=0.0,
+        min_order_size=0.0,
+        best_ask_fn=asks,
+        sleep_fn=lambda _: None,
+    )
+
+    assert len(client.created_orders) == 1
+    order = client.created_orders[0]
+    assert order["price"] >= 0.70
+    assert result["status"] == "FILLED"
+    assert result["filled"] == pytest.approx(1.5)
