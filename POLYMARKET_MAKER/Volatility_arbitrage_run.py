@@ -20,7 +20,8 @@ import hashlib
 import json
 import inspect
 from queue import Queue, Empty
-from typing import Dict, Any, Tuple, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Any, Tuple, List, Optional, Literal
 from decimal import Decimal, ROUND_UP, ROUND_DOWN
 import requests
 from datetime import datetime, timezone
@@ -34,6 +35,26 @@ from maker_execution import (
     maker_buy_follow_bid,
     maker_sell_follow_ask_with_floor_wait,
 )
+
+
+@dataclass
+class RunConfig:
+    source: str
+    direction: str
+    sell_mode: Literal["aggressive", "conservative"] = "aggressive"
+    size: Optional[float] = None
+    buy_price_threshold: Optional[float] = None
+    drop_window_minutes: float = 10.0
+    drop_pct: float = 0.05
+    profit_pct: float = 0.05
+    enable_incremental_drop_pct: bool = True
+    countdown_absolute_ts: Optional[float] = None
+    countdown_minutes_before: Optional[float] = None
+    yes_token_id: Optional[str] = None
+    no_token_id: Optional[str] = None
+    market_meta: Optional[Dict[str, Any]] = None
+    market_deadline_ts: Optional[float] = None
+    title: Optional[str] = None
 
 # ========== 1) Client：优先 ws 版，回退 rest 版 ==========
 def _get_client():
@@ -201,6 +222,27 @@ def _market_meta_from_obj(m: dict) -> Dict[str, Any]:
 
     meta["raw"] = m
     return meta
+
+
+def _calc_deadline(meta: Optional[Dict[str, Any]]) -> Optional[float]:
+    candidates: List[float] = []
+    if isinstance(meta, dict):
+        for key in ("end_ts", "resolved_ts"):
+            ts_val = meta.get(key)
+            if isinstance(ts_val, (int, float)):
+                candidates.append(float(ts_val))
+    return min(candidates) if candidates else None
+
+
+def _fmt_ts(ts_val: Optional[float]) -> Optional[str]:
+    if ts_val is None:
+        return None
+    try:
+        ts_f = float(ts_val)
+    except (TypeError, ValueError):
+        return None
+    dt = datetime.fromtimestamp(ts_f, tz=timezone.utc)
+    return dt.isoformat()
 
 
 def _maybe_fetch_market_meta_from_source(source: str) -> Dict[str, Any]:
@@ -991,37 +1033,31 @@ def _place_sell_fok(client, token_id: str, price: float, size: float) -> Dict[st
     return client.post_order(signed, OrderType.FOK)
 
 # ===== 主流程 =====
-def main():
+def run_with_config(config: RunConfig) -> Dict[str, Any]:
     client = _get_client()
     creds_check = _extract_api_creds(client)
     if not creds_check or not creds_check.get("key") or not creds_check.get("secret"):
         print("[ERR] 无法获取完整 API 凭证，请检查配置后重试。")
-        return
+        return {"status": "error", "reason": "missing_api_credentials"}
     print("[INIT] API 凭证已验证。")
     print("[INIT] ClobClient 就绪。")
-    print('请输入 Polymarket 市场 URL，或 "YES_id,NO_id"：')
-    source = input().strip()
+    source = (config.source or "").strip()
     if not source:
-        print("[ERR] 未输入，退出。")
-        return
-    try:
-        yes_id, no_id, title, market_meta = _resolve_with_fallback(source)
-    except Exception as e:
-        print("[ERR] 无法解析目标：", e)
-        return
+        print("[ERR] 未提供市场来源，退出。")
+        return {"status": "error", "reason": "missing_source"}
+    yes_id = config.yes_token_id
+    no_id = config.no_token_id
+    title = config.title
+    market_meta = config.market_meta or {}
+    if not yes_id or not no_id:
+        try:
+            yes_id, no_id, title, market_meta = _resolve_with_fallback(source)
+        except Exception as e:
+            print("[ERR] 无法解析目标：", e)
+            return {"status": "error", "reason": str(e)}
     market_meta = market_meta or {}
     print(f"[INFO] 市场/子问题标题: {title}")
     print(f"[INFO] 解析到 tokenIds: YES={yes_id} | NO={no_id}")
-
-    def _fmt_ts(ts_val: Optional[float]) -> Optional[str]:
-        if ts_val is None:
-            return None
-        try:
-            ts_f = float(ts_val)
-        except (TypeError, ValueError):
-            return None
-        dt = datetime.fromtimestamp(ts_f, tz=timezone.utc)
-        return dt.isoformat()
 
     end_ts = market_meta.get("end_ts") if isinstance(market_meta, dict) else None
     resolved_ts = market_meta.get("resolved_ts") if isinstance(market_meta, dict) else None
@@ -1033,16 +1069,7 @@ def main():
         if resolve_str and resolve_str != end_str:
             print(f"[INFO] 市场预计结算时间 (UTC): {resolve_str}")
 
-    def _calc_deadline(meta: Dict[str, Any]) -> Optional[float]:
-        candidates: List[float] = []
-        if isinstance(meta, dict):
-            for key in ("end_ts", "resolved_ts"):
-                ts_val = meta.get(key)
-                if isinstance(ts_val, (int, float)):
-                    candidates.append(float(ts_val))
-        return min(candidates) if candidates else None
-
-    market_deadline_ts = _calc_deadline(market_meta)
+    market_deadline_ts = config.market_deadline_ts or _calc_deadline(market_meta)
     if market_deadline_ts:
         dt_deadline = datetime.fromtimestamp(market_deadline_ts, tz=timezone.utc)
         print(
@@ -1051,107 +1078,45 @@ def main():
         )
     else:
         print("[ERR] 未能获取市场结束时间，程序终止。")
-        return
+        return {"status": "error", "reason": "missing_deadline"}
 
-    print("请选择卖出挂单模式：输入 1 为激进分支，输入 2 为保守分支（默认 1）：")
-    sell_mode_in = input().strip()
-    if sell_mode_in == "2":
-        sell_mode = "conservative"
+    sell_mode = config.sell_mode if config.sell_mode in ("aggressive", "conservative") else "aggressive"
+    if sell_mode == "conservative":
         print("[INIT] 已选择保守卖出分支。")
     else:
-        sell_mode = "aggressive"
         print("[INIT] 已选择激进卖出分支。")
 
-    print('请选择方向（YES/NO），回车确认：')
-    side = input().strip().upper()
+    side = (config.direction or "").upper()
     if side not in ("YES", "NO"):
         print("[ERR] 方向非法，退出。")
-        return
+        return {"status": "error", "reason": "invalid_direction"}
     token_id = yes_id if side == "YES" else no_id
 
-    print("请输入买入份数（留空=按 $1 反推）：")
-    size_in = input().strip()
-    print("请输入买入触发价（对标 ask，如 0.35，留空表示仅依赖跌幅触发）：")
-    buy_px_in = input().strip()
-    buy_threshold = None
-    if buy_px_in:
-        try:
-            buy_threshold = float(buy_px_in)
-        except Exception:
-            print("[ERR] 触发价非法，退出。")
-            return
-
-    print("请输入跌幅窗口分钟数（默认 10）：")
-    drop_window_in = input().strip()
-    try:
-        drop_window = float(drop_window_in) if drop_window_in else 10.0
-    except Exception:
-        print("[ERR] 跌幅窗口非法，退出。")
-        return
-
-    print("请输入跌幅触发百分比（默认 5 表示 5%）：")
-    drop_pct_in = input().strip()
-    try:
-        drop_pct = float(drop_pct_in) / 100.0 if drop_pct_in else 0.05
-    except Exception:
-        print("[ERR] 跌幅百分比非法，退出。")
-        return
-
-    print("请输入卖出盈利百分比（默认 5 表示 +5%）：")
-    profit_in = input().strip()
-    try:
-        profit_pct = float(profit_in) / 100.0 if profit_in else 0.05
-    except Exception:
-        print("[ERR] 盈利百分比非法，退出。")
-        return
-
-    print('是否启用“每次卖出后下一轮买入 +1%”功能？（默认开启，输入 no 关闭）：')
-    incremental_in = input().strip().lower()
-    enable_incremental_drop_pct = incremental_in != "no"
+    size_in = config.size
+    buy_threshold = config.buy_price_threshold
+    drop_window = config.drop_window_minutes if config.drop_window_minutes else 10.0
+    drop_pct = config.drop_pct if config.drop_pct else 0.05
+    profit_pct = config.profit_pct if config.profit_pct else 0.05
+    enable_incremental_drop_pct = config.enable_incremental_drop_pct
     if enable_incremental_drop_pct:
         print("[INIT] 已启用卖出后递增买入阈值功能。")
     else:
         print("[INIT] 已关闭卖出后递增买入阈值功能。")
 
     sell_only_start_ts: Optional[float] = None
-    if market_deadline_ts:
+    if config.countdown_absolute_ts is not None:
+        sell_only_start_ts = float(config.countdown_absolute_ts)
+    elif config.countdown_minutes_before is not None:
+        sell_only_start_ts = market_deadline_ts - float(config.countdown_minutes_before) * 60.0
+    if sell_only_start_ts is not None:
+        if sell_only_start_ts >= market_deadline_ts:
+            print("[ERR] 倒计时开始时间必须早于市场结束时间，程序终止。")
+            return {"status": "error", "reason": "invalid_countdown"}
+        dt_start = datetime.fromtimestamp(sell_only_start_ts, tz=timezone.utc)
         print(
-            "请输入倒计时开始时间（UTC）。"
-            "可输入：\n"
-            "  - 绝对时间，如 2024-01-01 12:30:00 或 ISO8601；\n"
-            "  - 提前的分钟数，如输入 30 表示截止前 30 分钟进入仅卖出模式；\n"
-            "留空表示不启用倒计时卖出保护。"
+            "[INFO] 倒计时卖出模式将在 UTC 时间 "
+            f"{dt_start.isoformat()} 开启。"
         )
-        countdown_in = input().strip()
-        if countdown_in:
-            parsed_ts: Optional[float] = None
-            used_minutes = False
-            if re.search(r"[A-Za-z:/-]", countdown_in):
-                parsed_ts = _parse_timestamp(countdown_in)
-            else:
-                try:
-                    minutes_before = float(countdown_in)
-                    parsed_ts = market_deadline_ts - minutes_before * 60.0
-                    used_minutes = True
-                except Exception:
-                    parsed_ts = _parse_timestamp(countdown_in)
-            if not parsed_ts:
-                print("[ERR] 无法解析倒计时开始时间，程序终止。")
-                return
-            if parsed_ts >= market_deadline_ts:
-                print("[ERR] 倒计时开始时间必须早于市场结束时间，程序终止。")
-                return
-            sell_only_start_ts = parsed_ts
-            if used_minutes:
-                print(
-                    f"[INFO] 倒计时卖出模式将在市场结束前 {countdown_in} 分钟开启。"
-                )
-            else:
-                dt_start = datetime.fromtimestamp(parsed_ts, tz=timezone.utc)
-                print(
-                    "[INFO] 倒计时卖出模式将在 UTC 时间 "
-                    f"{dt_start.isoformat()} 开启。"
-                )
 
     cfg = StrategyConfig(
         token_id=token_id,
@@ -1164,6 +1129,7 @@ def main():
     )
     strategy = VolArbStrategy(cfg)
     strategy_supports_total_position = _strategy_accepts_total_position(strategy)
+    final_status: Dict[str, Any] = {}
 
     latest: Dict[str, Dict[str, Any]] = {}
     action_queue: Queue[Action] = Queue()
@@ -1712,7 +1678,7 @@ def main():
                 continue
 
             ref_price = action.ref_price or ask or float(snap.get("price") or 0.0)
-            if size_in:
+            if size_in is not None:
                 try:
                     order_size = float(size_in)
                 except Exception:
@@ -1834,6 +1800,162 @@ def main():
                 print("[CLAIM] 未检测到需要 claim 的仓位，脚本结束。")
         except Exception as claim_exc:
             print(f"[CLAIM] 自动 claim 过程出现异常: {claim_exc}")
+
+    return {
+        "status": "finished",
+        "final_status": final_status,
+        "market_title": title,
+        "token_id": token_id,
+        "direction": side,
+    }
+
+
+def _prompt_config_from_stdin() -> Optional[RunConfig]:
+    print('请输入 Polymarket 市场 URL，或 "YES_id,NO_id"：')
+    source = input().strip()
+    if not source:
+        print("[ERR] 未输入，退出。")
+        return None
+    try:
+        yes_id, no_id, title, market_meta = _resolve_with_fallback(source)
+    except Exception as e:
+        print("[ERR] 无法解析目标：", e)
+        return None
+    market_meta = market_meta or {}
+    print(f"[INFO] 市场/子问题标题: {title}")
+    print(f"[INFO] 解析到 tokenIds: YES={yes_id} | NO={no_id}")
+
+    end_ts = market_meta.get("end_ts") if isinstance(market_meta, dict) else None
+    resolved_ts = market_meta.get("resolved_ts") if isinstance(market_meta, dict) else None
+    if end_ts or resolved_ts:
+        end_str = _fmt_ts(end_ts)
+        resolve_str = _fmt_ts(resolved_ts)
+        if end_str:
+            print(f"[INFO] 市场计划截止时间 (UTC): {end_str}")
+        if resolve_str and resolve_str != end_str:
+            print(f"[INFO] 市场预计结算时间 (UTC): {resolve_str}")
+
+    market_deadline_ts = _calc_deadline(market_meta)
+    if market_deadline_ts:
+        dt_deadline = datetime.fromtimestamp(market_deadline_ts, tz=timezone.utc)
+        print(
+            "[INFO] 监控目标结束时间 (UTC): "
+            f"{dt_deadline.isoformat()}"
+        )
+    else:
+        print("[ERR] 未能获取市场结束时间，程序终止。")
+        return None
+
+    print("请选择卖出挂单模式：输入 1 为激进分支，输入 2 为保守分支（默认 1）：")
+    sell_mode_in = input().strip()
+    sell_mode = "conservative" if sell_mode_in == "2" else "aggressive"
+
+    print('请选择方向（YES/NO），回车确认：')
+    side = input().strip().upper()
+    if side not in ("YES", "NO"):
+        print("[ERR] 方向非法，退出。")
+        return None
+
+    print("请输入买入份数（留空=按 $1 反推）：")
+    size_in = input().strip()
+    size_val: Optional[float] = None
+    if size_in:
+        try:
+            size_val = float(size_in)
+        except Exception:
+            print("[ERR] 份数非法，退出。")
+            return None
+
+    print("请输入买入触发价（对标 ask，如 0.35，留空表示仅依赖跌幅触发）：")
+    buy_px_in = input().strip()
+    buy_threshold = None
+    if buy_px_in:
+        try:
+            buy_threshold = float(buy_px_in)
+        except Exception:
+            print("[ERR] 触发价非法，退出。")
+            return None
+
+    print("请输入跌幅窗口分钟数（默认 10）：")
+    drop_window_in = input().strip()
+    try:
+        drop_window = float(drop_window_in) if drop_window_in else 10.0
+    except Exception:
+        print("[ERR] 跌幅窗口非法，退出。")
+        return None
+
+    print("请输入跌幅触发百分比（默认 5 表示 5%）：")
+    drop_pct_in = input().strip()
+    try:
+        drop_pct = float(drop_pct_in) / 100.0 if drop_pct_in else 0.05
+    except Exception:
+        print("[ERR] 跌幅百分比非法，退出。")
+        return None
+
+    print("请输入卖出盈利百分比（默认 5 表示 +5%）：")
+    profit_in = input().strip()
+    try:
+        profit_pct = float(profit_in) / 100.0 if profit_in else 0.05
+    except Exception:
+        print("[ERR] 盈利百分比非法，退出。")
+        return None
+
+    print('是否启用“每次卖出后下一轮买入 +1%”功能？（默认开启，输入 no 关闭）：')
+    incremental_in = input().strip().lower()
+    enable_incremental_drop_pct = incremental_in != "no"
+
+    sell_only_start_ts: Optional[float] = None
+    if market_deadline_ts:
+        print(
+            "请输入倒计时开始时间（UTC）。"
+            "可输入：\n"
+            "  - 绝对时间，如 2024-01-01 12:30:00 或 ISO8601；\n"
+            "  - 提前的分钟数，如输入 30 表示截止前 30 分钟进入仅卖出模式；\n"
+            "留空表示不启用倒计时卖出保护。"
+        )
+        countdown_in = input().strip()
+        if countdown_in:
+            parsed_ts: Optional[float] = None
+            if re.search(r"[A-Za-z:/-]", countdown_in):
+                parsed_ts = _parse_timestamp(countdown_in)
+            else:
+                try:
+                    minutes_before = float(countdown_in)
+                    parsed_ts = market_deadline_ts - minutes_before * 60.0
+                except Exception:
+                    parsed_ts = _parse_timestamp(countdown_in)
+            if not parsed_ts:
+                print("[ERR] 无法解析倒计时开始时间，程序终止。")
+                return None
+            if parsed_ts >= market_deadline_ts:
+                print("[ERR] 倒计时开始时间必须早于市场结束时间，程序终止。")
+                return None
+            sell_only_start_ts = parsed_ts
+
+    return RunConfig(
+        source=source,
+        direction=side,
+        sell_mode=sell_mode,
+        size=size_val,
+        buy_price_threshold=buy_threshold,
+        drop_window_minutes=drop_window,
+        drop_pct=drop_pct,
+        profit_pct=profit_pct,
+        enable_incremental_drop_pct=enable_incremental_drop_pct,
+        countdown_absolute_ts=sell_only_start_ts,
+        yes_token_id=yes_id,
+        no_token_id=no_id,
+        market_meta=market_meta,
+        market_deadline_ts=market_deadline_ts,
+        title=title,
+    )
+
+
+def main():
+    cfg = _prompt_config_from_stdin()
+    if not cfg:
+        return
+    run_with_config(cfg)
 
 
 if __name__ == "__main__":
