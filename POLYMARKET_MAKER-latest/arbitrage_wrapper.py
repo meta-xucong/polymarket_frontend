@@ -85,7 +85,7 @@ def _prepare_deadline_prompt(meta: dict, deadline_option: Optional[str]) -> tupl
 
 
 def run_arbitrage(
-    market_url: str,
+    market_url: Optional[str] = None,
     direction: str = "YES",
     size: Optional[float] = None,
     *,
@@ -99,10 +99,15 @@ def run_arbitrage(
     countdown: Optional[str | float | int] = None,
     timezone_override: Optional[str] = None,
     deadline_option: Optional[str | int] = None,
+    market_source: Optional[str] = None,
 ) -> None:
     """以编程方式运行套利脚本，参数映射自原交互式问题。"""
 
-    yes_id, no_id, _title, market_meta = _resolve_with_fallback(market_url)
+    resolved_market_url = market_url or market_source
+    if not resolved_market_url:
+        raise ValueError("必须提供 market_url 或 market_source")
+
+    yes_id, no_id, _title, market_meta = _resolve_with_fallback(resolved_market_url)
     market_meta = market_meta or {}
     market_meta = _apply_timezone_override_meta(market_meta, timezone_override)
 
@@ -113,7 +118,7 @@ def run_arbitrage(
     )
 
     inputs: List[str] = []
-    inputs.append(market_url)
+    inputs.append(resolved_market_url)
 
     if needs_timezone_prompt:
         inputs.append(timezone_override or "")
@@ -143,7 +148,7 @@ def run_arbitrage(
     feeder = _InputFeeder(inputs)
 
     def _resolve_stub(source: str):
-        if str(source).strip() == str(market_url).strip():
+        if str(source).strip() == str(resolved_market_url).strip():
             return yes_id, no_id, _title, market_meta
         return _resolve_with_fallback(source)
 
