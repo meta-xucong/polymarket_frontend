@@ -32,6 +32,7 @@ from unittest.mock import patch
 try:
     from Volatility_arbitrage_run import (
         _apply_timezone_override_meta,
+        _pick_market_subquestion,
         _resolve_with_fallback,
         _should_offer_common_deadline_options,
         main as _run_main,
@@ -115,16 +116,43 @@ def run_arbitrage(
     if not resolved_market_url:
         raise ValueError("必须提供 market_url 或 market_source")
 
+    auto_sub_idx: Optional[int] = None
+    auto_sub_direct_url: Optional[str] = None
+    if isinstance(subquestion_choice, str) and subquestion_choice.strip().startswith(
+        ("http://", "https://")
+    ):
+        auto_sub_direct_url = subquestion_choice.strip()
+    else:
+        try:
+            auto_sub_idx = int(subquestion_choice) if subquestion_choice is not None else None
+        except (TypeError, ValueError):
+            auto_sub_idx = None
+
     resolve_inputs: List[str] = []
     if subquestion_choice is not None:
         resolve_inputs.append(str(subquestion_choice))
 
     resolver = _InputFeeder(resolve_inputs)
+    _orig_pick_market_subquestion = _pick_market_subquestion
+
+    def _pick_market_subquestion_proxy(markets: list[dict]) -> dict:
+        if auto_sub_direct_url:
+            return {"__direct_url__": auto_sub_direct_url}
+        if auto_sub_idx is not None and 0 <= auto_sub_idx < len(markets):
+            return markets[auto_sub_idx]
+        if len(markets) == 1:
+            return markets[0]
+        return _orig_pick_market_subquestion(markets)
+
     try:
         with patch("builtins.input", resolver):
-            yes_id, no_id, _title, market_meta = _resolve_with_fallback(
-                resolved_market_url
-            )
+            with patch(
+                "Volatility_arbitrage_run._pick_market_subquestion",
+                _pick_market_subquestion_proxy,
+            ):
+                yes_id, no_id, _title, market_meta = _resolve_with_fallback(
+                    resolved_market_url
+                )
     except EOFError as exc:
         raise ValueError(
             "事件页需要选择子问题，请提供 subquestion_choice 或直接传入具体市场 URL"
