@@ -222,3 +222,14 @@ def test_merge_remote_position_size_detects_clear():
     new_size, changed = _merge_remote_position_size(5.0, 0.0)
     assert new_size is None
     assert changed is True
+
+
+def test_merge_remote_position_size_ignores_dust(monkeypatch):
+    # 远端仓位低于最小挂单量时应视为无仓位
+    new_size, changed = _merge_remote_position_size(5.0, 2.0, dust_floor=5.0)
+    assert new_size is None
+    assert changed is True
+
+    new_size, changed = _merge_remote_position_size(None, 2.0, dust_floor=5.0)
+    assert new_size is None
+    assert changed is False
