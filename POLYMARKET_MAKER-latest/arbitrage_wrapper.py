@@ -7,6 +7,7 @@
         market_url="https://polymarket.com/market/<slug>",
         direction="YES",           # 或 "NO"
         size=10,                    # 可选：买入份数；留空使用脚本默认按 $1 反推
+        subquestion_choice=0,       # 可选：若传入事件页 URL，可用序号选择子问题
         buy_price_threshold=0.35,   # 可选：买入触发价
         drop_window_minutes=10,
         drop_pct=0.05,
@@ -89,6 +90,7 @@ def run_arbitrage(
     direction: str = "YES",
     size: Optional[float] = None,
     *,
+    subquestion_choice: Optional[str | int] = None,
     manual_size_is_target: bool = True,
     sell_mode: str = "aggressive",
     buy_price_threshold: Optional[float] = None,
@@ -107,7 +109,20 @@ def run_arbitrage(
     if not resolved_market_url:
         raise ValueError("必须提供 market_url 或 market_source")
 
-    yes_id, no_id, _title, market_meta = _resolve_with_fallback(resolved_market_url)
+    resolve_inputs: List[str] = []
+    if subquestion_choice is not None:
+        resolve_inputs.append(str(subquestion_choice))
+
+    resolver = _InputFeeder(resolve_inputs)
+    try:
+        with patch("builtins.input", resolver):
+            yes_id, no_id, _title, market_meta = _resolve_with_fallback(
+                resolved_market_url
+            )
+    except EOFError as exc:
+        raise ValueError(
+            "事件页需要选择子问题，请提供 subquestion_choice 或直接传入具体市场 URL"
+        ) from exc
     market_meta = market_meta or {}
     market_meta = _apply_timezone_override_meta(market_meta, timezone_override)
 
