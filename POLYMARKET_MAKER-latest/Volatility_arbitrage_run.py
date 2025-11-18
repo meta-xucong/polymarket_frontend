@@ -633,22 +633,26 @@ def _merge_remote_position_size(
     remote_size: Optional[float],
     *,
     eps: float = 1e-6,
+    dust_floor: Optional[float] = None,
 ) -> Tuple[Optional[float], bool]:
     """Return normalized remote size and whether it differs from the current state."""
 
-    def _normalize(value: Optional[float]) -> Optional[float]:
+    def _normalize(value: Optional[float], *, apply_dust: bool) -> Optional[float]:
         if value is None:
             return None
         try:
             normalized = float(value)
         except (TypeError, ValueError):
             return None
-        if normalized <= eps:
+        floor = eps
+        if apply_dust and isinstance(dust_floor, (int, float)):
+            floor = max(float(dust_floor), floor)
+        if normalized <= floor:
             return None
         return normalized
 
-    current_norm = _normalize(current_size)
-    remote_norm = _normalize(remote_size)
+    current_norm = _normalize(current_size, apply_dust=False)
+    remote_norm = _normalize(remote_size, apply_dust=True)
 
     if current_norm is None and remote_norm is None:
         return None, False
@@ -2127,6 +2131,13 @@ def main():
         except (TypeError, ValueError):
             return None
 
+    def _awaiting_blocking(awaiting: Any) -> bool:
+        if awaiting is None:
+            return False
+        if awaiting == ActionType.BUY and awaiting_buy_passthrough:
+            return False
+        return True
+
     position_size: Optional[float] = None
     last_order_size: Optional[float] = None
     status_snapshot = strategy.status()
@@ -2145,6 +2156,7 @@ def main():
     pending_buy: Optional[Action] = None
     short_buy_cooldown = 1.0
     next_position_sync: float = 0.0
+    awaiting_buy_passthrough: bool = True
 
     def _maybe_refresh_position_size(reason: str, *, force: bool = False) -> None:
         nonlocal position_size, next_position_sync
@@ -2161,7 +2173,11 @@ def main():
         status_snapshot = strategy.status()
         current_state = status_snapshot.get("state")
         has_local_position = _extract_position_size(status_snapshot) > 0
-        new_size, changed = _merge_remote_position_size(position_size, total_pos)
+        eps = 1e-6
+        dust_floor = max(API_MIN_ORDER_SIZE or 0.0, 1e-4)
+        new_size, changed = _merge_remote_position_size(
+            position_size, total_pos, dust_floor=dust_floor
+        )
         position_size = new_size
         should_sync_state = changed
 
@@ -2180,8 +2196,11 @@ def main():
         origin_display = origin_note or "positions"
         avg_display = f"{avg_px:.4f}" if avg_px is not None else "-"
         if new_size is None:
+            dust_note = ""
+            if total_pos is not None and total_pos < dust_floor - eps:
+                dust_note = f" (size={float(total_pos):.4f} < 最小挂单量 {dust_floor:.2f}，视为无持仓)"
             print(
-                f"[WATCHDOG][POSITION] {reason} -> origin={origin_display} avg={avg_display} 当前无持仓"
+                f"[WATCHDOG][POSITION] {reason} -> origin={origin_display} avg={avg_display} 当前无持仓{dust_note}"
             )
             latest_bid = _latest_best_bid()
             fallback_px = latest_bid if latest_bid is not None else 0.0
@@ -2204,6 +2223,11 @@ def main():
             print(
                 f"[STATE] 同步策略持仓 -> price={fallback_px:.4f} size={new_size:.4f}"
             )
+            try:
+                if position_size is not None:
+                    _execute_sell(position_size, floor_hint=fallback_px, source="[POSITION][SYNC]")
+            except Exception as exc:
+                print(f"[WATCHDOG][POSITION] 自动卖出旧仓位失败：{exc}")
 
     def _execute_sell(
         order_qty: Optional[float],
@@ -2370,7 +2394,8 @@ def main():
                             has_position = True
                             break
 
-                    if state != "FLAT" or awaiting is not None or has_position:
+                    awaiting_blocking = _awaiting_blocking(awaiting)
+                    if state != "FLAT" or awaiting_blocking or has_position:
                         reason = (
                             "cooldown ended but still in position"
                             if has_position
@@ -2479,18 +2504,57 @@ def main():
             current_state = status.get("state")
             awaiting = status.get("awaiting")
             strat_pos = status.get("position_size")
-            has_position = False
+            raw_position: Optional[float] = None
+            actionable_position: Optional[float] = None
+            treat_as_dust: bool = False
             for pos in (position_size, strat_pos):
-                if pos is not None and pos > dust_floor:
-                    has_position = True
-                    break
+                try:
+                    val = float(pos)
+                except (TypeError, ValueError):
+                    continue
+                if val <= 0:
+                    continue
+                raw_position = max(raw_position or 0.0, val)
+            if raw_position is not None:
+                if raw_position > dust_floor:
+                    actionable_position = raw_position
+                else:
+                    treat_as_dust = True
 
-            if current_state != "FLAT" or awaiting is not None or has_position:
+            if actionable_position is not None:
                 print(
-                    "[BUY][SKIP] 当前状态非 FLAT 或仍有持仓/待确认订单，丢弃买入信号。"
+                    f"[BUY][BLOCK] 检测到可卖出仓位 {actionable_position:.4f}，先清仓后再尝试买入。"
                 )
-                strategy.on_reject("state not flat or position exists")
+                pending_buy = action
+                buy_cooldown_until = time.time() + short_buy_cooldown
+                _execute_sell(actionable_position, floor_hint=None, source="[BUY][BLOCK]")
                 continue
+
+            if treat_as_dust:
+                fallback_px = bid if bid > 0 else ask
+                strategy.on_sell_filled(avg_price=fallback_px or 0.0, remaining=0.0)
+                position_size = None
+                last_order_size = None
+                print(
+                    f"[BUY][DUST] 检测到尘埃仓位 {raw_position:.4f} < 最小挂单量 {dust_floor:.2f}，忽略并继续买入。"
+                )
+                status = strategy.status()
+                current_state = status.get("state")
+                awaiting = status.get("awaiting")
+
+            awaiting_blocking = _awaiting_blocking(awaiting)
+            if current_state != "FLAT" or awaiting_blocking:
+                _maybe_refresh_position_size("[BUY][STATE-SYNC]", force=True)
+                status = strategy.status()
+                current_state = status.get("state")
+                awaiting = status.get("awaiting")
+                awaiting_blocking = _awaiting_blocking(awaiting)
+                if current_state != "FLAT" or awaiting_blocking:
+                    print(
+                        "[BUY][SKIP] 当前状态非 FLAT 或仍有持仓/待确认订单，丢弃买入信号。"
+                    )
+                    strategy.on_reject("state not flat or position exists")
+                    continue
             now_for_buy = time.time()
             if now_for_buy < buy_cooldown_until:
                 remaining = buy_cooldown_until - now_for_buy
@@ -2577,6 +2641,8 @@ def main():
                     f"[WATCHDOG][BUY] 持仓检查 -> origin={origin_display} avg={avg_display} size={total_pos:.4f}"
                 )
 
+            if awaiting_buy_passthrough:
+                awaiting_buy_passthrough = False
             try:
                 buy_resp = maker_buy_follow_bid(
                     client=client,
