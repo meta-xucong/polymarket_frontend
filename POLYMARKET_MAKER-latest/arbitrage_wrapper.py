@@ -12,12 +12,14 @@
         drop_window_minutes=10,
         drop_pct=0.05,
         profit_pct=0.05,
+        countdown_minutes_before=30,  # 可选：如传数字表示结束前多少分钟进入仅卖出
     )
 
 思路：
 - 预先构造脚本期望的输入序列，并用 mock.patch 注入到内置 input。
 - 若未提供的参数则退回脚本默认值，保持与原交互式流程一致。
 - 脚本启动后的 stop/exit 监听线程会在输入耗尽时遇到 EOF 并自动退出。
+- 倒计时启动时间可用 countdown（绝对时间或分钟数）或 countdown_minutes_before（二选一）。
 """
 from __future__ import annotations
 
@@ -99,6 +101,7 @@ def run_arbitrage(
     profit_pct: Optional[float] = 0.05,
     enable_incremental_drop_pct: bool = True,
     countdown: Optional[str | float | int] = None,
+    countdown_minutes_before: Optional[str | float | int] = None,
     timezone_override: Optional[str] = None,
     deadline_option: Optional[str | int] = None,
     market_source: Optional[str] = None,
@@ -132,6 +135,15 @@ def run_arbitrage(
         deadline_option=None if deadline_option is None else str(deadline_option),
     )
 
+    if countdown is not None and countdown_minutes_before is not None:
+        raise ValueError(
+            "countdown 与 countdown_minutes_before 只能同时提供一个，用于倒计时卖出启动时间"
+        )
+
+    countdown_value = countdown
+    if countdown_value is None and countdown_minutes_before is not None:
+        countdown_value = countdown_minutes_before
+
     inputs: List[str] = []
     inputs.append(resolved_market_url)
 
@@ -158,7 +170,7 @@ def run_arbitrage(
 
     has_deadline = _calc_deadline_from_meta(market_meta)
     if not manual_deadline_disabled and has_deadline:
-        inputs.append("" if countdown is None else str(countdown))
+        inputs.append("" if countdown_value is None else str(countdown_value))
 
     feeder = _InputFeeder(inputs)
 
