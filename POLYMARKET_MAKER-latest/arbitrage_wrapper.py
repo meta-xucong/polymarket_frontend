@@ -13,16 +13,18 @@
         drop_pct=0.05,
         profit_pct=0.05,
         countdown_minutes_before=30,  # 可选：如传数字表示结束前多少分钟进入仅卖出
+        countdown_absolute_ts=...,    # 可选：直接传入绝对时间戳（秒/毫秒或 ISO 字符串）
     )
 
 思路：
 - 预先构造脚本期望的输入序列，并用 mock.patch 注入到内置 input。
 - 若未提供的参数则退回脚本默认值，保持与原交互式流程一致。
 - 脚本启动后的 stop/exit 监听线程会在输入耗尽时遇到 EOF 并自动退出。
-- 倒计时启动时间可用 countdown（绝对时间或分钟数）或 countdown_minutes_before（二选一）。
+- 倒计时启动时间可用 countdown（绝对时间或分钟数）/ countdown_minutes_before / countdown_absolute_ts（三选一）。
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Iterable, List, Optional
 from unittest.mock import patch
 
@@ -30,6 +32,7 @@ from unittest.mock import patch
 try:
     from Volatility_arbitrage_run import (
         _apply_timezone_override_meta,
+        _pick_market_subquestion,
         _resolve_with_fallback,
         _should_offer_common_deadline_options,
         main as _run_main,
@@ -102,6 +105,7 @@ def run_arbitrage(
     enable_incremental_drop_pct: bool = True,
     countdown: Optional[str | float | int] = None,
     countdown_minutes_before: Optional[str | float | int] = None,
+    countdown_absolute_ts: Optional[str | float | int] = None,
     timezone_override: Optional[str] = None,
     deadline_option: Optional[str | int] = None,
     market_source: Optional[str] = None,
@@ -112,16 +116,43 @@ def run_arbitrage(
     if not resolved_market_url:
         raise ValueError("必须提供 market_url 或 market_source")
 
+    auto_sub_idx: Optional[int] = None
+    auto_sub_direct_url: Optional[str] = None
+    if isinstance(subquestion_choice, str) and subquestion_choice.strip().startswith(
+        ("http://", "https://")
+    ):
+        auto_sub_direct_url = subquestion_choice.strip()
+    else:
+        try:
+            auto_sub_idx = int(subquestion_choice) if subquestion_choice is not None else None
+        except (TypeError, ValueError):
+            auto_sub_idx = None
+
     resolve_inputs: List[str] = []
     if subquestion_choice is not None:
         resolve_inputs.append(str(subquestion_choice))
 
     resolver = _InputFeeder(resolve_inputs)
+    _orig_pick_market_subquestion = _pick_market_subquestion
+
+    def _pick_market_subquestion_proxy(markets: list[dict]) -> dict:
+        if auto_sub_direct_url:
+            return {"__direct_url__": auto_sub_direct_url}
+        if auto_sub_idx is not None and 0 <= auto_sub_idx < len(markets):
+            return markets[auto_sub_idx]
+        if len(markets) == 1:
+            return markets[0]
+        return _orig_pick_market_subquestion(markets)
+
     try:
         with patch("builtins.input", resolver):
-            yes_id, no_id, _title, market_meta = _resolve_with_fallback(
-                resolved_market_url
-            )
+            with patch(
+                "Volatility_arbitrage_run._pick_market_subquestion",
+                _pick_market_subquestion_proxy,
+            ):
+                yes_id, no_id, _title, market_meta = _resolve_with_fallback(
+                    resolved_market_url
+                )
     except EOFError as exc:
         raise ValueError(
             "事件页需要选择子问题，请提供 subquestion_choice 或直接传入具体市场 URL"
@@ -135,14 +166,32 @@ def run_arbitrage(
         deadline_option=None if deadline_option is None else str(deadline_option),
     )
 
-    if countdown is not None and countdown_minutes_before is not None:
+    provided_countdown_fields = [
+        value
+        for value in (
+            ("countdown", countdown),
+            ("countdown_minutes_before", countdown_minutes_before),
+            ("countdown_absolute_ts", countdown_absolute_ts),
+        )
+        if value[1] is not None
+    ]
+    if len(provided_countdown_fields) > 1:
+        names = ", ".join(name for name, _ in provided_countdown_fields)
         raise ValueError(
-            "countdown 与 countdown_minutes_before 只能同时提供一个，用于倒计时卖出启动时间"
+            f"countdown 参数只能三选一（countdown / countdown_minutes_before / countdown_absolute_ts），当前同时提供: {names}"
         )
 
     countdown_value = countdown
     if countdown_value is None and countdown_minutes_before is not None:
         countdown_value = countdown_minutes_before
+    if countdown_value is None and countdown_absolute_ts is not None:
+        iso_ts = countdown_absolute_ts
+        if isinstance(countdown_absolute_ts, (int, float)):
+            ts_val = float(countdown_absolute_ts)
+            if ts_val > 1e12:
+                ts_val = ts_val / 1000.0
+            iso_ts = datetime.fromtimestamp(ts_val, tz=timezone.utc).isoformat()
+        countdown_value = str(iso_ts)
 
     inputs: List[str] = []
     inputs.append(resolved_market_url)
