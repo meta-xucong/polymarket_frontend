@@ -32,10 +32,17 @@ from unittest.mock import patch
 try:
     from Volatility_arbitrage_run import (
         _apply_timezone_override_meta,
+        _extract_event_slug,
+        _fetch_market_by_slug,
+        _list_markets_under_event,
+        _market_meta_from_obj,
         _pick_market_subquestion,
         _resolve_with_fallback,
         _should_offer_common_deadline_options,
+        _tokens_from_market_obj,
+        resolve_token_ids,
         main as _run_main,
+        _maybe_fetch_market_meta_from_source,
     )
 except Exception as exc:  # pragma: no cover - 初始化即失败时直接抛错
     raise RuntimeError(f"无法导入套利主脚本：{exc}")
@@ -54,18 +61,85 @@ def _calc_deadline_from_meta(meta: Optional[dict]) -> Optional[float]:
     return min(candidates) if candidates else None
 
 
-class _InputFeeder:
-    """按序返回预设输入，耗尽后抛 EOF 以终结监听线程。"""
+def _resolve_event_with_choice(
+    event_slug: str,
+    auto_sub_idx: Optional[int],
+    auto_sub_direct_url: Optional[str],
+):
+    mkts = _list_markets_under_event(event_slug)
+    if not mkts:
+        raise ValueError(f"未在事件 {event_slug} 下检索到子问题列表。")
 
-    def __init__(self, values: Iterable[str]):
+    if auto_sub_direct_url:
+        y2, n2, title2, raw2 = resolve_token_ids(auto_sub_direct_url)
+        if y2 and n2:
+            meta = _market_meta_from_obj(raw2 or {}) if raw2 else {}
+            if not meta:
+                meta = _maybe_fetch_market_meta_from_source(auto_sub_direct_url)
+            return y2, n2, title2, meta or {}
+        raise ValueError("无法从粘贴的URL解析出 tokenId。")
+
+    if auto_sub_idx is None:
+        raise ValueError("事件页需要选择子问题，请提供 subquestion_choice 或直接传入具体市场 URL")
+
+    if not (0 <= auto_sub_idx < len(mkts)):
+        raise ValueError(
+            f"子问题序号 {auto_sub_idx} 超出范围（共有 {len(mkts)} 个子问题，从 0 开始编号）"
+        )
+
+    chosen = mkts[auto_sub_idx]
+    y3, n3, title3 = _tokens_from_market_obj(chosen)
+    meta = _market_meta_from_obj(chosen)
+    if y3 and n3:
+        if not meta:
+            slug = chosen.get("slug") or ""
+            if slug:
+                meta = _maybe_fetch_market_meta_from_source(
+                    f"https://polymarket.com/market/{slug}"
+                )
+        return y3, n3, title3, meta or {}
+
+    slug2 = chosen.get("slug") or ""
+    if slug2:
+        m_full = _fetch_market_by_slug(slug2)
+        if m_full:
+            y4, n4, title4 = _tokens_from_market_obj(m_full)
+            if y4 and n4:
+                meta = _market_meta_from_obj(m_full)
+                if not meta:
+                    meta = _maybe_fetch_market_meta_from_source(
+                        f"https://polymarket.com/market/{slug2}"
+                    )
+                return y4, n4, title4, meta or {}
+        y5, n5, title5, raw5 = resolve_token_ids(
+            f"https://polymarket.com/market/{slug2}"
+        )
+        if y5 and n5:
+            meta = _market_meta_from_obj(raw5 or {}) if raw5 else {}
+            if not meta:
+                meta = _maybe_fetch_market_meta_from_source(
+                    f"https://polymarket.com/market/{slug2}"
+                )
+            return y5, n5, title5, meta or {}
+
+    raise ValueError("子问题未包含 tokenId，且兜底解析失败。")
+
+
+class _InputFeeder:
+    """按序返回预设输入，耗尽后可选继续回退到固定值。"""
+
+    def __init__(self, values: Iterable[str], *, exhaustion_fallback: Optional[str] = None):
         self._values = list(values)
         self._idx = 0
+        self._exhaustion_fallback = exhaustion_fallback
 
     def __call__(self, prompt: str = "") -> str:
         if self._idx < len(self._values):
             val = self._values[self._idx]
             self._idx += 1
             return str(val)
+        if self._exhaustion_fallback is not None:
+            return str(self._exhaustion_fallback)
         raise EOFError("arbitrage_wrapper: no more scripted input")
 
 
@@ -128,35 +202,50 @@ def run_arbitrage(
         except (TypeError, ValueError):
             auto_sub_idx = None
 
-    resolve_inputs: List[str] = []
-    if subquestion_choice is not None:
-        resolve_inputs.append(str(subquestion_choice))
+    event_slug = _extract_event_slug(resolved_market_url)
+    if event_slug and (auto_sub_idx is not None or auto_sub_direct_url):
+        yes_id, no_id, _title, market_meta = _resolve_event_with_choice(
+            event_slug,
+            auto_sub_idx,
+            auto_sub_direct_url,
+        )
+    else:
+        resolve_inputs: List[str] = []
+        if subquestion_choice is not None:
+            resolve_inputs.append(str(subquestion_choice))
 
-    resolver = _InputFeeder(resolve_inputs)
-    _orig_pick_market_subquestion = _pick_market_subquestion
+        resolver = _InputFeeder(
+            resolve_inputs,
+            exhaustion_fallback=resolve_inputs[-1] if resolve_inputs else None,
+        )
+        _orig_pick_market_subquestion = _pick_market_subquestion
 
-    def _pick_market_subquestion_proxy(markets: list[dict]) -> dict:
-        if auto_sub_direct_url:
-            return {"__direct_url__": auto_sub_direct_url}
-        if auto_sub_idx is not None and 0 <= auto_sub_idx < len(markets):
-            return markets[auto_sub_idx]
-        if len(markets) == 1:
-            return markets[0]
-        return _orig_pick_market_subquestion(markets)
-
-    try:
-        with patch("builtins.input", resolver):
-            with patch(
-                "Volatility_arbitrage_run._pick_market_subquestion",
-                _pick_market_subquestion_proxy,
-            ):
-                yes_id, no_id, _title, market_meta = _resolve_with_fallback(
-                    resolved_market_url
+        def _pick_market_subquestion_proxy(markets: list[dict]) -> dict:
+            if auto_sub_direct_url:
+                return {"__direct_url__": auto_sub_direct_url}
+            if auto_sub_idx is not None:
+                if 0 <= auto_sub_idx < len(markets):
+                    return markets[auto_sub_idx]
+                raise ValueError(
+                    f"子问题序号 {auto_sub_idx} 超出范围（共有 {len(markets)} 个子问题，从 0 开始编号）"
                 )
-    except EOFError as exc:
-        raise ValueError(
-            "事件页需要选择子问题，请提供 subquestion_choice 或直接传入具体市场 URL"
-        ) from exc
+            if len(markets) == 1:
+                return markets[0]
+            return _orig_pick_market_subquestion(markets)
+
+        try:
+            with patch("builtins.input", resolver):
+                with patch(
+                    "Volatility_arbitrage_run._pick_market_subquestion",
+                    _pick_market_subquestion_proxy,
+                ):
+                    yes_id, no_id, _title, market_meta = _resolve_with_fallback(
+                        resolved_market_url
+                    )
+        except EOFError as exc:
+            raise ValueError(
+                "事件页需要选择子问题，请提供 subquestion_choice 或直接传入具体市场 URL"
+            ) from exc
     market_meta = market_meta or {}
     market_meta = _apply_timezone_override_meta(market_meta, timezone_override)
 
