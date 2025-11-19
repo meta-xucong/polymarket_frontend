@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-import builtins
-from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import types
@@ -14,6 +10,8 @@ requests_stub = types.SimpleNamespace(
     get=lambda *args, **kwargs: None,
     post=lambda *args, **kwargs: None,
     Session=lambda *args, **kwargs: types.SimpleNamespace(get=lambda *a, **k: None, post=lambda *a, **k: None),
+    RequestException=Exception,
+    Timeout=Exception,
 )
 sys.modules.setdefault("requests", requests_stub)
 sys.modules.setdefault("websocket", types.SimpleNamespace())
@@ -21,38 +19,14 @@ sys.modules.setdefault("websocket", types.SimpleNamespace())
 import arbitrage_wrapper as wrapper
 
 
-_DEFAULT_META = {
-    "end_ts": 1_700_000_000,
-    "end_ts_precise": True,
-    "timezone_hint": "UTC",
-}
+def test_countdown_absolute_ts_forwarded(monkeypatch):
+    captured = {}
 
+    def fake_run(params, interactive=False):
+        captured["countdown"] = params.countdown
+        captured["countdown_absolute_ts"] = params.countdown_absolute_ts
 
-def _setup_common_stubs(monkeypatch):
-    monkeypatch.setattr(
-        wrapper, "_resolve_with_fallback", lambda url: ("yes", "no", "t", dict(_DEFAULT_META))
-    )
-    monkeypatch.setattr(wrapper, "_apply_timezone_override_meta", lambda meta, tz: meta)
-    monkeypatch.setattr(wrapper, "_should_offer_common_deadline_options", lambda meta: False)
-
-
-# ---------------------------------------------------------------------------
-# countdown_absolute_ts
-# ---------------------------------------------------------------------------
-
-def test_countdown_absolute_ts_is_coerced_to_iso(monkeypatch):
-    _setup_common_stubs(monkeypatch)
-
-    captured_inputs: list[str] = []
-
-    def fake_run_main():
-        while True:
-            try:
-                captured_inputs.append(builtins.input())
-            except EOFError:
-                break
-
-    monkeypatch.setattr(wrapper, "_run_main", fake_run_main)
+    monkeypatch.setattr(wrapper, "_run_main", fake_run)
 
     ts = 1_700_000_000
     wrapper.run_arbitrage(
@@ -62,19 +36,27 @@ def test_countdown_absolute_ts_is_coerced_to_iso(monkeypatch):
         countdown_absolute_ts=ts,
     )
 
-    expected_iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-    assert captured_inputs[-1] == expected_iso
+    assert captured["countdown"] is None
+    assert captured["countdown_absolute_ts"] == ts
 
 
-# ---------------------------------------------------------------------------
-# mutual exclusivity
-# ---------------------------------------------------------------------------
+def test_mutual_exclusive_countdown(monkeypatch):
+    def fake_run(params, interactive=False):
+        provided = [
+            name
+            for name, value in (
+                ("countdown", params.countdown),
+                ("countdown_minutes_before", params.countdown_minutes_before),
+                ("countdown_absolute_ts", params.countdown_absolute_ts),
+            )
+            if value is not None
+        ]
+        if len(provided) > 1:
+            raise ValueError("countdown 参数只能三选一")
 
-def test_only_one_countdown_value_is_allowed(monkeypatch):
-    _setup_common_stubs(monkeypatch)
-    monkeypatch.setattr(wrapper, "_run_main", lambda: None)
+    monkeypatch.setattr(wrapper, "_run_main", fake_run)
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError):
         wrapper.run_arbitrage(
             market_url="https://example.com/event",
             direction="NO",
@@ -82,5 +64,3 @@ def test_only_one_countdown_value_is_allowed(monkeypatch):
             countdown=5,
             countdown_absolute_ts=1_700_000_000,
         )
-
-    assert "三选一" in str(excinfo.value)

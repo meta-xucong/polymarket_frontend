@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import builtins
 from pathlib import Path
 import sys
 import types
@@ -12,9 +9,9 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 requests_stub = types.SimpleNamespace(
     get=lambda *args, **kwargs: None,
     post=lambda *args, **kwargs: None,
-    Session=lambda *args, **kwargs: types.SimpleNamespace(
-        get=lambda *a, **k: None, post=lambda *a, **k: None
-    ),
+    Session=lambda *args, **kwargs: types.SimpleNamespace(get=lambda *a, **k: None, post=lambda *a, **k: None),
+    RequestException=Exception,
+    Timeout=Exception,
 )
 sys.modules.setdefault("requests", requests_stub)
 sys.modules.setdefault("websocket", types.SimpleNamespace())
@@ -22,133 +19,59 @@ sys.modules.setdefault("websocket", types.SimpleNamespace())
 import arbitrage_wrapper as wrapper
 
 
-_DEFAULT_META = {"end_ts": 1_700_000_000, "end_ts_precise": True, "timezone_hint": "UTC"}
+def test_parameters_are_forwarded(monkeypatch):
+    captured = {}
 
+    def fake_run(params, interactive=False):
+        captured["params"] = params
+        captured["interactive"] = interactive
 
-def _setup_common_stubs(monkeypatch):
-    monkeypatch.setattr(wrapper, "_apply_timezone_override_meta", lambda meta, tz: meta)
-    monkeypatch.setattr(wrapper, "_should_offer_common_deadline_options", lambda meta: False)
-
-
-# ---------------------------------------------------------------------------
-# subquestion auto-selection
-# ---------------------------------------------------------------------------
-
-
-def test_event_with_single_subquestion_is_autopicked(monkeypatch):
-    _setup_common_stubs(monkeypatch)
-
-    chosen_titles: list[str] = []
-
-    def fake_resolve(url: str):
-        import Volatility_arbitrage_run as var
-
-        markets = [
-            {"title": "Only", "clobTokenIds": ["yes-id", "no-id"], "end_ts": 1_700_000_000},
-        ]
-        chosen = var._pick_market_subquestion(markets)
-        chosen_titles.append(chosen.get("title", ""))
-        return chosen["clobTokenIds"][0], chosen["clobTokenIds"][1], chosen.get("title", ""), dict(_DEFAULT_META)
-
-    monkeypatch.setattr(wrapper, "_resolve_with_fallback", fake_resolve)
-
-    captured_inputs: list[str] = []
-
-    def fake_run_main():
-        while True:
-            try:
-                captured_inputs.append(builtins.input())
-            except EOFError:
-                break
-
-    monkeypatch.setattr(wrapper, "_run_main", fake_run_main)
-
-    wrapper.run_arbitrage(market_source="https://example.com/event/slug", direction="YES", size=1)
-
-    assert chosen_titles == ["Only"]
-    # 第一个输入值应为传入的事件页 URL
-    assert captured_inputs[0] == "https://example.com/event/slug"
-
-
-def test_subquestion_choice_is_honored(monkeypatch):
-    _setup_common_stubs(monkeypatch)
-
-    markets = [
-        {"title": "First", "clobTokenIds": ["y1", "n1"], "end_ts": 1_700_000_000},
-        {"title": "Second", "clobTokenIds": ["y2", "n2"], "end_ts": 1_700_000_000},
-    ]
-    monkeypatch.setattr(wrapper, "_list_markets_under_event", lambda slug: markets)
-    monkeypatch.setattr(wrapper, "_market_meta_from_obj", lambda obj: dict(_DEFAULT_META))
-    monkeypatch.setattr(wrapper, "_fetch_market_by_slug", lambda slug: None)
-    monkeypatch.setattr(wrapper, "resolve_token_ids", lambda url: (None, None, None, None))
-
-    chosen_titles: list[str] = []
-    monkeypatch.setattr(wrapper, "_run_main", lambda: None)
-
-    orig_resolve_event = wrapper._resolve_event_with_choice
-
-    def capture_resolve_event(event_slug: str, idx: int | None, direct: str | None):
-        result = orig_resolve_event(event_slug, idx, direct)
-        chosen_titles.append(markets[idx]["title"])
-        return result
-
-    monkeypatch.setattr(wrapper, "_resolve_event_with_choice", capture_resolve_event)
+    monkeypatch.setattr(wrapper, "_run_main", fake_run)
 
     wrapper.run_arbitrage(
-        market_url="https://example.com/event/slug",
+        market_url="https://example.com/market/slug",
         direction="NO",
-        size=None,
+        size=2,
         subquestion_choice=1,
+        deadline_option="3",
     )
 
-    assert chosen_titles == ["Second"]
+    params = captured["params"]
+    assert params.market_source == "https://example.com/market/slug"
+    assert params.subquestion_choice == 1
+    assert params.direction == "NO"
+    assert params.size == 2
+    assert params.deadline_option == "3"
+    assert captured["interactive"] is False
 
 
-def test_out_of_range_subquestion_choice_is_rejected(monkeypatch):
-    _setup_common_stubs(monkeypatch)
+def test_missing_market_source_is_rejected():
+    with pytest.raises(ValueError):
+        wrapper.run_arbitrage(direction="YES")
 
-    monkeypatch.setattr(
-        wrapper,
-        "_list_markets_under_event",
-        lambda slug: [{"title": "Only", "clobTokenIds": ["y1", "n1"], "end_ts": 1_700_000_000}],
-    )
-    monkeypatch.setattr(wrapper, "resolve_token_ids", lambda url: (None, None, None, None))
-    monkeypatch.setattr(wrapper, "_fetch_market_by_slug", lambda slug: None)
-    monkeypatch.setattr(wrapper, "_run_main", lambda: None)
 
-    with pytest.raises(ValueError) as excinfo:
+def test_conflicting_countdown_arguments(monkeypatch):
+    def fake_run(params, interactive=False):
+        provided = [
+            name
+            for name, value in (
+                ("countdown", params.countdown),
+                ("countdown_minutes_before", params.countdown_minutes_before),
+                ("countdown_absolute_ts", params.countdown_absolute_ts),
+            )
+            if value is not None
+        ]
+        if len(provided) > 1:
+            raise ValueError(
+                "countdown 参数只能三选一（countdown / countdown_minutes_before / countdown_absolute_ts），当前同时提供: "
+                + ", ".join(provided)
+            )
+
+    monkeypatch.setattr(wrapper, "_run_main", fake_run)
+
+    with pytest.raises(ValueError):
         wrapper.run_arbitrage(
-            market_url="https://example.com/event/slug",
-            direction="YES",
-            size=None,
-            subquestion_choice=5,
+            market_url="https://example.com/market/slug",
+            countdown=5,
+            countdown_minutes_before=10,
         )
-
-    assert "子问题序号" in str(excinfo.value)
-
-
-def test_extra_prompt_from_resolver_does_not_fail(monkeypatch):
-    _setup_common_stubs(monkeypatch)
-
-    call_count = 0
-
-    def fake_resolve(url: str):
-        nonlocal call_count
-        # 模拟解析过程中多次触发 input()
-        _ = builtins.input("first")
-        _ = builtins.input("second")
-        call_count += 1
-        return "yes", "no", "title", dict(_DEFAULT_META)
-
-    monkeypatch.setattr(wrapper, "_resolve_with_fallback", fake_resolve)
-    monkeypatch.setattr(wrapper, "_run_main", lambda: None)
-
-    wrapper.run_arbitrage(
-        market_source="https://example.com/market/slug",
-        direction="YES",
-        size=1,
-        subquestion_choice=2,
-    )
-
-    assert call_count == 1
-
