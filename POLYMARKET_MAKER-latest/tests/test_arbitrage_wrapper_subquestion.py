@@ -107,3 +107,33 @@ def test_subquestion_choice_is_honored(monkeypatch):
 
     assert chosen_titles == ["Second"]
 
+
+def test_out_of_range_subquestion_choice_is_rejected(monkeypatch):
+    _setup_common_stubs(monkeypatch)
+
+    def fake_resolve(url: str):
+        import Volatility_arbitrage_run as var
+
+        markets = [
+            {"title": "Only", "clobTokenIds": ["y1", "n1"], "end_ts": 1_700_000_000},
+        ]
+        chosen = var._pick_market_subquestion(markets)
+        return (
+            chosen["clobTokenIds"][0],
+            chosen["clobTokenIds"][1],
+            chosen.get("title", ""),
+            dict(_DEFAULT_META),
+        )
+
+    monkeypatch.setattr(wrapper, "_resolve_with_fallback", fake_resolve)
+
+    with pytest.raises(ValueError) as excinfo:
+        wrapper.run_arbitrage(
+            market_url="https://example.com/event/slug",
+            direction="YES",
+            size=None,
+            subquestion_choice=5,
+        )
+
+    assert "子问题序号" in str(excinfo.value)
+
