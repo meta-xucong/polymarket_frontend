@@ -138,8 +138,12 @@ def run_arbitrage(
     def _pick_market_subquestion_proxy(markets: list[dict]) -> dict:
         if auto_sub_direct_url:
             return {"__direct_url__": auto_sub_direct_url}
-        if auto_sub_idx is not None and 0 <= auto_sub_idx < len(markets):
-            return markets[auto_sub_idx]
+        if auto_sub_idx is not None:
+            if 0 <= auto_sub_idx < len(markets):
+                return markets[auto_sub_idx]
+            raise ValueError(
+                f"子问题序号 {auto_sub_idx} 超出范围（共有 {len(markets)} 个子问题，从 0 开始编号）"
+            )
         if len(markets) == 1:
             return markets[0]
         return _orig_pick_market_subquestion(markets)
