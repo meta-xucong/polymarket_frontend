@@ -53,6 +53,20 @@ class DummyClient:
             seq.append({"status": "CANCELLED", "filledAmount": last.get("filledAmount", 0.0)})
 
 
+class InsufficientBalanceClient(DummyClient):
+    def __init__(self, status_sequences: List[List[Dict[str, object]]], fail_threshold: float) -> None:
+        super().__init__(status_sequences)
+        self.fail_threshold = fail_threshold
+        self.failures = 0
+
+    def create_order(self, payload: Dict[str, object]) -> Dict[str, object]:
+        size = float(payload.get("size", 0.0) or 0.0)
+        if size >= self.fail_threshold and self.failures < 1:
+            self.failures += 1
+            raise RuntimeError("insufficient balance to place order")
+        return super().create_order(payload)
+
+
 @pytest.fixture(autouse=True)
 def _patch_adapter(monkeypatch):
     monkeypatch.setattr(maker, "ClobPolymarketAPI", lambda client: StubAdapter(client))
@@ -196,6 +210,56 @@ def test_maker_buy_retries_after_invalid_status():
     assert len(client.created_orders) == 2
     assert client.cancelled, "Expected the INVALID order to be cancelled before retry"
     assert client.created_orders[1]["size"] < client.created_orders[0]["size"]
+
+
+def test_maker_buy_shrinks_on_balance_error_during_create():
+    client = InsufficientBalanceClient(
+        status_sequences=[[{"status": "FILLED", "filledAmount": 0.2999, "avgPrice": 0.5}]],
+        fail_threshold=0.29995,
+    )
+    bids = _stream([0.5, 0.5, 0.5])
+
+    result = maker.maker_buy_follow_bid(
+        client,
+        token_id="asset",
+        target_size=0.3,
+        poll_sec=0.0,
+        min_quote_amt=0.0,
+        min_order_size=0.0,
+        best_bid_fn=bids,
+        sleep_fn=lambda _: None,
+    )
+
+    assert result["status"] == "FILLED"
+    assert result["filled"] == pytest.approx(0.2999, rel=0, abs=1e-9)
+    assert client.failures == 1, "expected one balance-related failure before retry"
+    assert len(client.created_orders) == 1
+
+
+def test_maker_buy_retries_on_insufficient_balance_status():
+    client = DummyClient(
+        status_sequences=[
+            [{"status": "REJECTED", "message": "insufficient balance", "filledAmount": 0.0}],
+            [{"status": "FILLED", "filledAmount": 0.1499, "avgPrice": 0.25}],
+        ]
+    )
+    bids = _stream([0.25, 0.25, 0.25])
+
+    result = maker.maker_buy_follow_bid(
+        client,
+        token_id="asset",
+        target_size=0.15,
+        poll_sec=0.0,
+        min_quote_amt=0.0,
+        min_order_size=0.0,
+        best_bid_fn=bids,
+        sleep_fn=lambda _: None,
+    )
+
+    assert result["status"] == "FILLED"
+    assert result["filled"] == pytest.approx(0.1499, rel=0, abs=1e-9)
+    assert len(client.created_orders) == 2
+    assert client.cancelled, "Expected balance-related rejection to trigger cancellation"
 
 
 def test_maker_sell_waits_for_floor_before_order():
