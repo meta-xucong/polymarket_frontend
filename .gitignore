@@ -1,0 +1,15 @@
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+*.log
+*.pid
+*.stop
+*.tmp
+
+.DS_Store
+Thumbs.db
+
+PolymarketDesktop_Final/
+POLYMARKET_MAKER_copytrade_v2/panel/dist_closed/
+POLYMARKET_MAKER_copytrade_v2/panel/run/

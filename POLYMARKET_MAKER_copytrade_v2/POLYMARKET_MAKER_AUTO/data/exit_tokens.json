@@ -1,0 +1,104 @@
+[
+  {
+    "token_id": "t1",
+    "exit_ts": 1773763872.025596,
+    "exit_reason": "SELL_ABANDONED",
+    "exit_data": {
+      "has_position": true
+    },
+    "trigger_source": "",
+    "trigger_reason": "SELL_ABANDONED",
+    "trigger_path": "",
+    "refillable": false,
+    "stale_position_record": true,
+    "stale_position_detected_at": "2026-03-17T18:18:13Z",
+    "stale_position_detected_ts": 1773771493.7947838
+  },
+  {
+    "token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992",
+    "exit_ts": 1773804623.555197,
+    "exit_reason": "ACTIVE_UNMANAGED_REARM",
+    "exit_data": {
+      "rearm_path": "startup_reconcile_buy",
+      "has_position": false,
+      "copytrade_active": true,
+      "handled_topic": false,
+      "stale_keys_cleared": []
+    },
+    "trigger_source": "",
+    "trigger_reason": "ACTIVE_UNMANAGED_REARM",
+    "trigger_path": "",
+    "refillable": false
+  },
+  {
+    "token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992",
+    "exit_ts": 1773804655.7045345,
+    "exit_reason": "LOW_BALANCE_PAUSE",
+    "exit_data": {
+      "has_position": false,
+      "deferred_by_low_balance": true
+    },
+    "trigger_source": "",
+    "trigger_reason": "LOW_BALANCE_PAUSE",
+    "trigger_path": "",
+    "refillable": true
+  },
+  {
+    "token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992",
+    "exit_ts": 1773805384.6350353,
+    "exit_reason": "LOW_BALANCE_PAUSE",
+    "exit_data": {
+      "has_position": false,
+      "deferred_by_low_balance": true
+    },
+    "trigger_source": "",
+    "trigger_reason": "LOW_BALANCE_PAUSE",
+    "trigger_path": "",
+    "refillable": true
+  },
+  {
+    "token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992",
+    "exit_ts": 1773805384.6383617,
+    "exit_reason": "ACTIVE_UNMANAGED_REARM",
+    "exit_data": {
+      "rearm_path": "startup_reconcile_buy",
+      "has_position": false,
+      "copytrade_active": true,
+      "handled_topic": true,
+      "stale_keys_cleared": []
+    },
+    "trigger_source": "",
+    "trigger_reason": "ACTIVE_UNMANAGED_REARM",
+    "trigger_path": "",
+    "refillable": false
+  },
+  {
+    "token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992",
+    "exit_ts": 1773805773.3700325,
+    "exit_reason": "LOW_BALANCE_PAUSE",
+    "exit_data": {
+      "has_position": false,
+      "deferred_by_low_balance": true
+    },
+    "trigger_source": "",
+    "trigger_reason": "LOW_BALANCE_PAUSE",
+    "trigger_path": "",
+    "refillable": true
+  },
+  {
+    "token_id": "54062452792656591940498333119952225497035882944827198088651910072416401737992",
+    "exit_ts": 1773805774.652554,
+    "exit_reason": "ACTIVE_UNMANAGED_REARM",
+    "exit_data": {
+      "rearm_path": "startup_reconcile_buy",
+      "has_position": false,
+      "copytrade_active": true,
+      "handled_topic": true,
+      "stale_keys_cleared": []
+    },
+    "trigger_source": "",
+    "trigger_reason": "ACTIVE_UNMANAGED_REARM",
+    "trigger_path": "",
+    "refillable": false
+  }
+]

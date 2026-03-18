@@ -1,0 +1,21 @@
+{
+  "updated_at": "2026-03-17T16:11:11Z",
+  "token_states": {
+    "t1": {
+      "cycle_round": 0,
+      "next_buy_allowed_ts": 0.0,
+      "last_cycle_completed_ts": 0.0,
+      "local_cycle_status": "position_resume",
+      "local_cycle_started_ts": 1773763871.7840104,
+      "local_cycle_invalidated_ts": 0.0,
+      "local_cycle_invalidate_reason": "",
+      "local_cycle_started_mode": "position_resume",
+      "stoploss_stage": "none",
+      "stoploss_first_cut_ts": 0.0,
+      "stoploss_cooldown_until_ts": 0.0,
+      "stoploss_confirm_hits": 0,
+      "stoploss_last_action_ts": 0.0,
+      "stoploss_position_opened_ts": 0.0
+    }
+  }
+}
