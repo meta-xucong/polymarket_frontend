@@ -49,6 +49,20 @@ SERVICE_NAMES = {
 LOCAL_SERVICE_SPECS: Dict[str, Dict[str, Any]] = {}
 
 
+def _windows_subprocess_kwargs() -> Dict[str, Any]:
+    if os.name != "nt":
+        return {}
+
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": creationflags,
+        "startupinfo": startupinfo,
+    }
+
+
 def _resolve_python_command() -> list[str]:
     override = os.getenv("POLY_LOCAL_PYTHON")
     if override:
@@ -65,6 +79,21 @@ def _resolve_python_command() -> list[str]:
     return [sys.executable]
 
 
+def _resolve_service_executable(bin_dir: Path | None, stem: str) -> Path | None:
+    if not bin_dir:
+        return None
+
+    candidates = (
+        bin_dir / f"{stem}.exe",
+        bin_dir / stem / f"{stem}.exe",
+        bin_dir / f"{stem}.dist" / f"{stem}.exe",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _resolve_local_service_specs() -> Dict[str, Dict[str, Any]]:
     if LOCAL_SERVICE_SPECS:
         return LOCAL_SERVICE_SPECS
@@ -72,9 +101,12 @@ def _resolve_local_service_specs() -> Dict[str, Dict[str, Any]]:
     python_cmd = _resolve_python_command()
     force_source = os.getenv("POLY_FORCE_SOURCE_SERVICES") == "1"
     bin_dir = resolve_desktop_bin_dir()
-    copytrade_bin = bin_dir / "copytrade_v2_service.exe" if bin_dir else None
-    autorun_bin = bin_dir / "autorun_v2_service.exe" if bin_dir else None
-    v3_bin = bin_dir / "copytrade_v3_multi_service.exe" if bin_dir else None
+    copytrade_bin = _resolve_service_executable(bin_dir, "copytrade_v2_service")
+    # autorun binary still has a packaging issue around eth-hash backends.
+    # Keep panel control on source-python path until a stable frozen build replaces it.
+    autorun_bin = None
+    # v3 multi is kept on source-python fallback for now.
+    v3_bin = None
 
     return {
         "copytrade": {
@@ -142,6 +174,7 @@ def _run_command(*command: str) -> Tuple[bool, str]:
             text=True,
             timeout=20,
             check=False,
+            **_windows_subprocess_kwargs(),
         )
     except FileNotFoundError:
         return False, f"command not found: {command[0]}"
@@ -205,6 +238,19 @@ def _pid_exists(pid: int | None) -> bool:
         return False
 
 
+def _tail_log(path: Path, max_lines: int = 20, max_chars: int = 2000) -> str:
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ""
+    tail = "\n".join(lines[-max_lines:])
+    if len(tail) > max_chars:
+        tail = tail[-max_chars:]
+    return tail
+
+
 def _local_service_status() -> Dict[str, Any]:
     services: Dict[str, Any] = {}
     for key in SERVICE_NAMES:
@@ -243,25 +289,49 @@ def _start_local_service(service_key: str) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {}
     child_env = os.environ.copy()
     child_env["POLY_PANEL_STOP_FILE"] = str(_stop_file(service_key))
+    for env_key, env_value in get_account_payload().items():
+        text = str(env_value or "").strip()
+        if text:
+            child_env[env_key] = text
     if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-            subprocess, "DETACHED_PROCESS", 0
+        creationflags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
         kwargs["close_fds"] = True
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
     else:
         kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(
-        spec["cmd"],
-        cwd=str(spec["cwd"]),
-        stdout=log_handle,
-        stderr=log_handle,
-        env=child_env,
-        creationflags=creationflags,
-        **kwargs,
-    )
+    try:
+        proc = subprocess.Popen(
+            spec["cmd"],
+            cwd=str(spec["cwd"]),
+            stdout=log_handle,
+            stderr=log_handle,
+            env=child_env,
+            creationflags=creationflags,
+            **kwargs,
+        )
+    except Exception as exc:
+        log_handle.close()
+        return {"ok": False, "message": str(exc)}
+
     log_handle.close()
     _write_pid(service_key, proc.pid)
+    time.sleep(1.0)
+    if not _pid_exists(proc.pid):
+        _clear_pid(service_key)
+        _clear_stop_file(service_key)
+        log_excerpt = _tail_log(spec["log"])
+        message = "process exited immediately"
+        if log_excerpt:
+            message += f"\n{log_excerpt}"
+        return {"ok": False, "message": message}
     return {"ok": True, "message": "started", "pid": proc.pid}
 
 
