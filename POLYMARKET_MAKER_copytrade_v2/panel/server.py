@@ -411,7 +411,11 @@ class PanelHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return
 
+    def _touch_activity(self) -> None:
+        setattr(self.server, "last_request_ts", time.time())
+
     def do_GET(self) -> None:  # noqa: N802
+        self._touch_activity()
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -426,6 +430,9 @@ class PanelHandler(BaseHTTPRequestHandler):
             payload = get_runtime_payload()
             payload["services"] = _service_status()
             _json_response(self, HTTPStatus.OK, payload)
+            return
+        if path == "/api/ping":
+            _json_response(self, HTTPStatus.OK, {"ok": True})
             return
         if path == "/api/v3/settings":
             _json_response(self, HTTPStatus.OK, {"settings": get_v3_settings_payload()})
@@ -470,6 +477,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        self._touch_activity()
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -520,7 +528,9 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 def create_http_server(host: str, port: int) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), PanelHandler)
+    server = ThreadingHTTPServer((host, port), PanelHandler)
+    setattr(server, "last_request_ts", time.time())
+    return server
 
 
 def main() -> None:

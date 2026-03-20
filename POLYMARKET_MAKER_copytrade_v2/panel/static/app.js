@@ -479,6 +479,10 @@ async function refreshAll() {
   ]);
 }
 
+async function pingPanel() {
+  await readJson("/api/ping");
+}
+
 async function boot() {
   document.getElementById("account-form").addEventListener("submit", (event) => {
     saveAccount(event).catch((error) => showToast(error.message, true));
@@ -525,6 +529,9 @@ async function boot() {
   });
 
   await refreshAll();
+  window.setInterval(() => {
+    pingPanel().catch(() => {});
+  }, 15000);
 }
 
 boot().catch((error) => showToast(error.message, true));
