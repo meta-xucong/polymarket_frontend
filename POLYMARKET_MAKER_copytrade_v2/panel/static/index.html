@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polymarket Control Panel</title>
+  <link rel="stylesheet" href="/styles.css?v=20260321-auth1">
+</head>
+<body>
+  <div id="auth-gate" class="auth-gate hidden">
+    <form id="auth-form" class="auth-card">
+      <h2>Panel Sign In</h2>
+      <p class="auth-note">Use the panel credentials for this VPS instance.</p>
+      <label>
+        <span class="field-label">Username</span>
+        <input name="username" autocomplete="username" required>
+      </label>
+      <label>
+        <span class="field-label">Password</span>
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div class="auth-actions">
+        <button type="submit">Sign in</button>
+      </div>
+      <p id="auth-error" class="auth-error hidden"></p>
+    </form>
+  </div>
+
+  <div id="credentials-gate" class="auth-gate hidden">
+    <form id="credentials-form" class="auth-card">
+      <h2>Update Login Credentials</h2>
+      <p class="auth-note">The default admin/admin login is only for first access. Set a new username and password before using the panel.</p>
+      <label>
+        <span class="field-label">New username</span>
+        <input id="credentials-username" name="username" minlength="3" autocomplete="username" required>
+      </label>
+      <label>
+        <span class="field-label">New password</span>
+        <input id="credentials-password" name="password" type="password" minlength="6" autocomplete="new-password" required>
+      </label>
+      <label>
+        <span class="field-label">Confirm password</span>
+        <input id="credentials-password-confirm" name="password_confirm" type="password" minlength="6" autocomplete="new-password" required>
+      </label>
+      <div class="auth-actions">
+        <button type="submit">Save credentials</button>
+      </div>
+      <p id="credentials-error" class="auth-error hidden"></p>
+    </form>
+  </div>
+
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Single VPS Console</p>
+        <h1>Polymarket Control Panel</h1>
+        <p class="lede">Manage copytrade v2 and SmartMoney v3 from one remote panel.</p>
+      </div>
+      <div class="hero-actions">
+        <span id="instance-badge" class="instance-badge">instance: loading</span>
+        <button id="logout-btn" class="ghost hidden">Sign out</button>
+        <button id="refresh-all" class="ghost">Refresh</button>
+      </div>
+    </section>
+
+    <section class="tabbar">
+      <button class="tab is-active" data-panel="v2-panel">
+        POLYMARKET_MAKER v2
+        <span class="tab-tip">Single-account copytrade and autorun operations.</span>
+      </button>
+      <button class="tab" data-panel="v3-panel">
+        SmartMoney v3 Multi
+        <span class="tab-tip">Multi-account smart money copytrade configuration.</span>
+      </button>
+    </section>
+
+    <section id="v2-panel" class="panel-view is-active">
+      <section class="grid">
+        <article class="card status-card">
+          <div class="card-head">
+            <h2>Runtime</h2>
+            <span id="status-pill" class="pill">Loading</span>
+          </div>
+          <div id="runtime-summary" class="stats"></div>
+          <div class="actions" data-service-group="v2">
+            <button data-service="copytrade" data-action="start">Start Copytrade</button>
+            <button data-service="copytrade" data-action="stop" class="ghost">Stop Copytrade</button>
+            <button data-service="copytrade" data-action="restart">Restart Copytrade</button>
+            <button data-service="autorun" data-action="start">Start Autorun</button>
+            <button data-service="autorun" data-action="stop" class="ghost">Stop Autorun</button>
+            <button data-service="autorun" data-action="restart">Restart Autorun</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Account Settings</h2>
+            <span class="muted">account.json</span>
+          </div>
+          <form id="account-form" class="form-grid">
+            <label><span class="field-label">Host</span><input name="POLY_HOST" required></label>
+            <label><span class="field-label">Chain ID</span><input name="POLY_CHAIN_ID" type="number" required></label>
+            <label><span class="field-label">Signature Type</span><input name="POLY_SIGNATURE" type="number" required></label>
+            <label><span class="field-label">Funder Address</span><input name="POLY_FUNDER" required></label>
+            <label class="full"><span class="field-label">Private Key</span><input name="POLY_KEY" type="password" required></label>
+            <label><span class="field-label">API Key</span><input name="POLY_API_KEY"></label>
+            <label><span class="field-label">API Secret</span><input name="POLY_API_SECRET" type="password"></label>
+            <label><span class="field-label">API Passphrase</span><input name="POLY_API_PASSPHRASE" type="password"></label>
+            <label class="full"><span class="field-label">Data API Address</span><input name="POLY_DATA_ADDRESS"></label>
+            <div class="full submit-row">
+              <button type="submit">Save account settings</button>
+            </div>
+            <div class="full profile-link-row">
+              <span class="profile-label">Polymarket profile</span>
+              <a id="profile-link" class="profile-link disabled" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">No valid address</a>
+            </div>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Core Parameters</h2>
+            <span class="muted">Mapped to existing config files</span>
+          </div>
+          <form id="settings-form" class="stack">
+            <div class="subgrid">
+              <label><span class="field-label">Target Addresses</span><textarea name="target_addresses" rows="3" placeholder="One address per line"></textarea></label>
+              <label><span class="field-label">Poll Interval (sec)</span><input name="poll_interval_sec" type="number" step="1"></label>
+              <label><span class="field-label">Minimum Size</span><input name="min_size" type="number" step="0.1"></label>
+            </div>
+            <div class="subgrid">
+              <label><span class="field-label">Max Concurrent Tasks</span><input name="max_concurrent_tasks" type="number" step="1"></label>
+              <label><span class="field-label">Copytrade Poll (sec)</span><input name="copytrade_poll_seconds" type="number" step="1"></label>
+              <label><span class="field-label">Command Poll (sec)</span><input name="command_poll_seconds" type="number" step="1"></label>
+              <label>
+                <span class="field-label">Strategy Mode</span>
+                <select name="strategy_mode">
+                  <option value="classic">classic</option>
+                  <option value="aggressive">aggressive</option>
+                </select>
+              </label>
+              <label><span class="field-label">Burst Slots</span><input name="burst_slots" type="number" step="1"></label>
+            </div>
+            <div class="subgrid">
+              <label><span class="field-label">Order Size</span><input name="order_size" type="number" step="0.1"></label>
+              <label><span class="field-label">Max Position / Market</span><input name="max_position_per_market" type="number" step="0.1"></label>
+              <label><span class="field-label">Drop Threshold (%)</span><input name="drop_pct" type="number" step="0.0001"></label>
+              <label><span class="field-label">Profit Target (%)</span><input name="profit_pct" type="number" step="0.0001"></label>
+              <label>
+                <span class="field-label">Sell Mode</span>
+                <select name="sell_mode">
+                  <option value="aggressive">aggressive</option>
+                  <option value="conservative">conservative</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Shock Guard</span>
+                <select name="shock_guard_enabled">
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </label>
+              <label><span class="field-label">Shock Window (sec)</span><input name="shock_window_sec" type="number" step="1"></label>
+              <label><span class="field-label">Shock Drop (%)</span><input name="shock_drop_pct" type="number" step="0.0001"></label>
+            </div>
+            <div class="submit-row">
+              <button type="submit">Save core parameters</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="card log-card">
+          <div class="card-head">
+            <h2>Logs</h2>
+            <div class="inline-actions">
+              <button id="show-copytrade-log" class="ghost">Copytrade Log</button>
+              <button id="show-autorun-log" class="ghost">Autorun Log</button>
+            </div>
+          </div>
+          <pre id="log-viewer" class="log-viewer">Loading</pre>
+        </article>
+      </section>
+    </section>
+
+    <section id="v3-panel" class="panel-view">
+      <section class="grid">
+        <article class="card status-card">
+          <div class="card-head">
+            <h2>Runtime</h2>
+            <span id="v3-status-pill" class="pill">Loading</span>
+          </div>
+          <div id="v3-runtime-summary" class="stats"></div>
+          <div class="actions" data-service-group="v3">
+            <button data-service="v3multi" data-action="start">Start v3 Multi</button>
+            <button data-service="v3multi" data-action="stop" class="ghost">Stop v3 Multi</button>
+            <button data-service="v3multi" data-action="restart">Restart v3 Multi</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Global Settings</h2>
+            <span class="muted">copytrade_config.json</span>
+          </div>
+          <form id="v3-settings-form" class="stack">
+            <div class="subgrid">
+              <label><span class="field-label">Target Addresses</span><textarea name="target_addresses" rows="3" placeholder="One address per line"></textarea></label>
+              <label><span class="field-label">Poll Interval (sec)</span><input name="poll_interval_sec" type="number" step="1"></label>
+              <label><span class="field-label">Exit Poll (sec)</span><input name="poll_interval_sec_exiting" type="number" step="1"></label>
+              <label><span class="field-label">Min Order USD</span><input name="min_order_usd" type="number" step="0.1"></label>
+              <label><span class="field-label">Max Order USD</span><input name="max_order_usd" type="number" step="0.1"></label>
+            </div>
+            <div class="subgrid">
+              <label>
+                <span class="field-label">Startup Mode</span>
+                <select name="startup_mode">
+                  <option value="baseline_only">baseline_only</option>
+                  <option value="baseline_replay">baseline_replay</option>
+                </select>
+              </label>
+              <label><span class="field-label">Replay Window (hours)</span><input name="replay_window_hours" type="number" step="1" min="1"></label>
+              <label>
+                <span class="field-label">Follow New Topics Only</span>
+                <select name="follow_new_topics_only">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+            </div>
+
+            <details class="advanced-box">
+              <summary>Advanced Controls</summary>
+              <div class="advanced-grid">
+                <p class="advanced-note">These values override risk, maker/taker, and low-price guard behavior for the integrated runtime.</p>
+                <div class="subgrid">
+                  <label><span class="field-label">Default Max Notional / Token (USD)</span><input name="max_notional_per_token" type="number" step="0.1"></label>
+                  <label><span class="field-label">Default Max Notional Total (USD)</span><input name="max_notional_total" type="number" step="0.1"></label>
+                </div>
+                <div class="subgrid">
+                  <label>
+                    <span class="field-label">Taker Enabled</span>
+                    <select name="taker_enabled">
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  </label>
+                  <label><span class="field-label">Taker Spread Threshold</span><input name="taker_spread_threshold" type="number" step="0.0001"></label>
+                  <label>
+                    <span class="field-label">Taker Order Type</span>
+                    <select name="taker_order_type">
+                      <option value="FAK">FAK</option>
+                      <option value="FOK">FOK</option>
+                    </select>
+                  </label>
+                  <label><span class="field-label">Maker Max Wait (sec)</span><input name="maker_max_wait_sec" type="number" step="1"></label>
+                  <label>
+                    <span class="field-label">Maker to Taker</span>
+                    <select name="maker_to_taker_enabled">
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="subgrid">
+                  <label>
+                    <span class="field-label">Low Price Guard</span>
+                    <select name="lowp_guard_enabled">
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  </label>
+                  <label><span class="field-label">Low Price Threshold</span><input name="lowp_price_threshold" type="number" step="0.0001"></label>
+                  <label><span class="field-label">Low Price Follow Multiplier</span><input name="lowp_follow_ratio_mult" type="number" step="0.0001"></label>
+                  <label><span class="field-label">Low Price Min USD</span><input name="lowp_min_order_usd" type="number" step="0.1"></label>
+                  <label><span class="field-label">Low Price Max USD</span><input name="lowp_max_order_usd" type="number" step="0.1"></label>
+                </div>
+              </div>
+            </details>
+
+            <div class="submit-row">
+              <button type="submit">Save global settings</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h2>Account Settings</h2>
+            <span class="muted">accounts.json</span>
+          </div>
+          <div class="stack">
+            <label>
+              <span class="field-label">Selected Account</span>
+              <select id="v3-account-select"></select>
+            </label>
+            <form id="v3-account-form" class="form-grid">
+              <input type="hidden" name="index">
+              <label><span class="field-label">Account Name</span><input name="name"></label>
+              <label>
+                <span class="field-label">Enabled</span>
+                <select name="enabled">
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </label>
+              <label class="full"><span class="field-label">Execution Address</span><input name="my_address"></label>
+              <label class="full"><span class="field-label">Private Key</span><input name="private_key" type="password"></label>
+              <label><span class="field-label">Follow Ratio</span><input name="follow_ratio" type="number" step="0.01"></label>
+              <details class="advanced-box full">
+                <summary>Account Overrides</summary>
+                <div class="advanced-grid">
+                  <p class="advanced-note">Leave blank to inherit from the global defaults.</p>
+                  <div class="subgrid">
+                    <label><span class="field-label">Account Max Notional / Token (USD)</span><input name="max_notional_per_token" type="number" step="0.1"></label>
+                    <label><span class="field-label">Account Max Notional Total (USD)</span><input name="max_notional_total" type="number" step="0.1"></label>
+                  </div>
+                </div>
+              </details>
+              <div class="full submit-row">
+                <button type="submit">Save selected account</button>
+                <button id="delete-v3-account" type="button" class="ghost danger">Delete selected account</button>
+              </div>
+              <div class="full profile-link-row">
+                <span class="profile-label">Polymarket profile</span>
+                <a id="v3-profile-link" class="profile-link disabled" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">No valid address</a>
+              </div>
+            </form>
+          </div>
+        </article>
+
+        <article class="card log-card">
+          <div class="card-head">
+            <h2>Logs</h2>
+            <div class="inline-actions">
+              <button id="show-v3-log" class="ghost">v3 Multi Log</button>
+            </div>
+          </div>
+          <pre id="v3-log-viewer" class="log-viewer">Loading</pre>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js?v=20260321-auth1"></script>
+</body>
+</html>

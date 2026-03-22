@@ -1,0 +1,21 @@
+{
+  "poll_interval_sec": 60,
+  "initial_lookback_sec": 3600,
+  "targets": [
+    {
+      "account": "0xd748c701ad93cfec32a3420e10f3b08e68612125",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0x39d0f1dca6fb7e5514858c1a337724a426764fe8",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0xe52c0a1327a12edc7bd54ea6f37ce00a4ca96924",
+      "min_size": 5.0,
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "market_url": null,
+  "timezone": "America/New_York",
+  "deadline_override_ts": null,
+  "disable_deadline_checks": false,
+  "deadline_policy": {
+    "override_choice": null,
+    "disable_deadline": false,
+    "timezone": "America/New_York",
+    "default_deadline": {
+      "time": "12:59",
+      "timezone": "America/New_York"
+    }
+  },
+  "side": null,
+  "order_size": null,
+  "order_size_is_target": true,
+  "random_action_delay_sec_min": 5,
+  "random_action_delay_sec_max": 10,
+  "random_buy_shares_add_max": 2,
+  "sell_mode": "aggressive",
+  "buy_price_threshold": null,
+  "drop_window_minutes": 30,
+  "drop_pct": 0.0,
+  "profit_pct": 0.003,
+  "enable_incremental_drop_pct": false,
+  "incremental_drop_pct_step": 0.0,
+  "enable_incremental_profit_pct": false,
+  "incremental_profit_pct_step": 0.0,
+  "incremental_profit_pct_cap": 0.03,
+  "no_event_exit_minutes": 10,
+  "signal_timeout_minutes": 20,
+  "min_buy_price": 0.01,
+  "max_buy_price": 0.99,
+  "sell_inactive_hours": 1.0,
+  "countdown": {
+    "minutes_before_end": 300,
+    "absolute_time": null,
+    "timezone": null
+  },
+  "shock_guard": {
+    "enabled": false,
+    "shock_window_sec": 180,
+    "shock_drop_pct": 0.1,
+    "shock_velocity_pct_per_sec": null,
+    "shock_abs_floor": 0.04,
+    "observation_hold_sec": 180,
+    "recovery": {
+      "rebound_pct_min": 0.08,
+      "reconfirm_sec": 90,
+      "spread_cap": 0.04,
+      "require_conditions": 2
+    },
+    "blocked_cooldown_sec": 600,
+    "max_pending_buy_age_sec": 240
+  }
+}
