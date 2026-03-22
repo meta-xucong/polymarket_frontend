@@ -10,7 +10,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-PolymarketDesktop_Final/
 POLYMARKET_MAKER_copytrade_v2/panel/dist_closed/
 POLYMARKET_MAKER_copytrade_v2/panel/run/
 POLYMARKET_MAKER_copytrade_v2/copytrade/tokens_from_copytrade.json
@@ -32,3 +31,33 @@ android/android/signing.properties
 PolymarketDesktop_Final_20260320.zip
 *.lnk
 release_assets/
+
+# Package a minimal closed bundle: keep only launchers, exes, bin, app_root.
+PolymarketDesktop_Final/*
+!PolymarketDesktop_Final/PolymarketDesktop.exe
+!PolymarketDesktop_Final/PolymarketWebPanel.exe
+!PolymarketDesktop_Final/LaunchDesktop.bat
+!PolymarketDesktop_Final/LaunchWebPanel.bat
+!PolymarketDesktop_Final/README.md
+!PolymarketDesktop_Final/bin/
+!PolymarketDesktop_Final/bin/**
+!PolymarketDesktop_Final/app_root/
+!PolymarketDesktop_Final/app_root/**
+
+# Exclude packaged runtime/state artifacts.
+PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/copytrade/tokens_from_copytrade.json
+PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_state.json
+PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_sell_signals.json
+PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/data/*.json
+PolymarketDesktop_Final/app_root/POLY_SMARTMONEY/copytrade_v3_muti/state_*.json
+PolymarketDesktop_Final/app_root/POLY_SMARTMONEY/copytrade_v3_muti/logs/
+PolymarketDesktop_Final/app_root/**/nuitka-crash-report.xml
+PolymarketDesktop_Final/app_root/**/.panel_*
+PolymarketDesktop_Final/app_root/**/ws_cache.lock
+PolymarketDesktop_Final/app_root/**/__pycache__/
+PolymarketDesktop_Final/app_root/**/*.py[cod]
+PolymarketDesktop_Final/app_root/**/*.log
+PolymarketDesktop_Final/app_root/**/logs/**
+PolymarketDesktop_Final/app_root/**/run/**
+PolymarketDesktop_Final/**/run/*.pid
+PolymarketDesktop_Final/**/run/*.port

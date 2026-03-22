@@ -1,0 +1,16 @@
+{
+  "_comment": "Default multi-account config. Replace address/private key before trading.",
+  "_warning": "Do not commit real private keys. You may also use env_key_suffix for env-based keys.",
+  "accounts": [
+    {
+      "name": "01",
+      "my_address": "REPLACE_WITH_ADDRESS",
+      "env_key_suffix": "",
+      "follow_ratio": 0.1,
+      "enabled": true,
+      "max_notional_per_token": 6.0,
+      "max_notional_total": 10000.0,
+      "private_key": "REPLACE_WITH_PRIVATE_KEY"
+    }
+  ]
+}
