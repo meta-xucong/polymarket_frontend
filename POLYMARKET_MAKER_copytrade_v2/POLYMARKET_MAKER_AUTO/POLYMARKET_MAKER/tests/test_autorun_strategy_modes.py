@@ -2531,6 +2531,72 @@ def test_sell_signal_older_than_local_cycle_is_ignored(tmp_path):
     assert row["note"] == "local_cycle_gate:stale_previous_cycle_signal"
 
 
+def test_cycle_closed_copytrade_sell_without_position_finalizes_terminal_freeze(tmp_path):
+    copytrade_dir = tmp_path / "copytrade"
+    copytrade_dir.mkdir(parents=True, exist_ok=True)
+    sell_path = copytrade_dir / "copytrade_sell_signals.json"
+    sell_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "",
+                "sell_tokens": [
+                    {
+                        "token_id": "t1",
+                        "introduced_by_buy": True,
+                        "active": True,
+                        "status": "pending",
+                        "signal_ts": time.time(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = GlobalConfig.from_dict(
+        {
+            "copytrade_sell_signals_path": str(sell_path),
+            "copytrade_tokens_path": str(copytrade_dir / "tokens_from_copytrade.json"),
+            "paths": {"data_directory": str(tmp_path / "data")},
+        }
+    )
+    manager = _build_manager(cfg)
+    manager._sell_bootstrap_done = True
+    manager._token_cycle_states["t1"] = {
+        "cycle_round": 1,
+        "next_buy_allowed_ts": 0.0,
+        "local_cycle_status": "cycle_closed",
+    }
+    manager.topic_details["t1"] = {"terminal_sell_reason": "COPYTRADE_SELL"}
+    manager._has_account_position = lambda _token_id, force_refresh=False: False  # type: ignore[assignment]
+
+    exit_path = manager._exit_signal_path("t1")
+    exit_path.parent.mkdir(parents=True, exist_ok=True)
+    exit_path.write_text(
+        json.dumps(
+            {
+                "token_id": "t1",
+                "active": True,
+                "status": "pending",
+                "exit_reason": "COPYTRADE_SELL",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager._apply_sell_signals(manager._load_copytrade_sell_signals())
+
+    payload = json.loads(exit_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "done"
+    assert payload["active"] is False
+    assert payload["invalidate_reason"] == "position_flat"
+
+    sell_payload = json.loads(sell_path.read_text(encoding="utf-8"))
+    assert sell_payload["sell_tokens"] == []
+    archived = sell_payload["archived_sell_tokens"][0]
+    assert archived["token_id"] == "t1"
+    assert archived["status"] == "done"
+
+
 def test_load_copytrade_tokens_skips_non_buy_introduced(tmp_path):
     copytrade_dir = tmp_path / "copytrade"
     copytrade_dir.mkdir(parents=True, exist_ok=True)
@@ -3762,6 +3828,34 @@ def test_build_run_config_omits_exit_signal_path_for_buy_without_position(tmp_pa
     assert "exit_signal_path" not in run_cfg
 
 
+def test_build_run_config_backfills_resume_state_for_refill_with_position(tmp_path):
+    cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
+    manager = _build_manager(cfg)
+    token_id = "refill_live_position"
+    manager.topic_details[token_id] = {
+        "token_id": token_id,
+        "queue_role": "refill_with_position",
+    }
+    manager._stoploss_reentry_states[token_id] = manager._default_stoploss_reentry_state(
+        token_id
+    )
+    manager._refresh_unified_position_snapshot = lambda **_kwargs: (  # type: ignore[assignment]
+        [{"asset": token_id, "size": 6.0, "avgPrice": 0.52}],
+        {token_id: 6.0},
+        "ok",
+        "live",
+    )
+
+    run_cfg = manager._build_run_config(token_id)
+
+    resume = run_cfg.get("resume_state") or {}
+    assert resume.get("has_position") is True
+    assert float(resume.get("position_size") or 0.0) == 6.0
+    assert float(resume.get("entry_price") or 0.0) == 0.52
+    assert resume.get("skip_buy") is True
+    assert run_cfg.get("startup_skip_if_open_sell") is True
+
+
 def test_issue_exit_signal_rejects_illegal_reason_and_no_position(tmp_path):
     cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
     manager = _build_manager(cfg)
@@ -4284,6 +4378,95 @@ def test_filter_refillable_tokens_skips_terminal_orphan_even_with_refillable_exi
     )
 
     assert refillable == []
+
+
+def test_orphan_probe_uses_official_terminal_market_state_to_stop_retries(tmp_path):
+    cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
+    manager = _build_manager(cfg)
+    now = time.time()
+    manager.topic_details["t1"] = {"token_id": "t1", "condition_id": "cond-1"}
+    manager._append_orphan_token_record(
+        {
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 60.0)),
+            "updated_ts": float(now - 60.0),
+            "token_id": "t1",
+            "status": "orphaned",
+            "probe_attempts": 0,
+            "next_probe_at": float(now - 1.0),
+            "reason": "UNIT_TEST_ORPHAN",
+            "trigger_source": "unit_test",
+        }
+    )
+    manager._build_copytrade_active_token_set = lambda: {"t1"}  # type: ignore[assignment]
+    manager._refresh_sell_position_snapshot = lambda: ({"t1": 3.0}, "ok")  # type: ignore[assignment]
+    manager._load_copytrade_sell_signals = lambda: {}  # type: ignore[assignment]
+    manager._market_state_checker = types.SimpleNamespace(
+        check_market_state=lambda *args, **kwargs: autorun_mod.MarketState(
+            status=autorun_mod.MarketStatus.CLOSED,
+            condition_id="cond-1",
+            token_id="t1",
+            data={"closed": True, "active": False},
+            checked_at=now,
+            is_tradeable=False,
+            refillable=False,
+        )
+    )
+    cleaner_calls = []
+    manager._market_closed_cleaner = types.SimpleNamespace(
+        clean_closed_market=lambda **kwargs: cleaner_calls.append(kwargs)
+    )
+
+    manager._run_orphan_recovery_probe(now)
+
+    rows = json.loads((manager.config.data_dir / "orphan_tokens.json").read_text(encoding="utf-8"))
+    latest = next(row for row in rows if row.get("token_id") == "t1")
+    assert latest.get("status") == "manual_only"
+    assert latest.get("reason") == "MARKET_CLOSED"
+    assert latest.get("next_probe_at") == 0.0
+    assert "official_market_status=closed" in str(latest.get("note") or "")
+    assert cleaner_calls and cleaner_calls[-1]["exit_reason"] == "MARKET_CLOSED"
+
+
+def test_orphan_probe_stops_when_official_positions_confirm_no_position(tmp_path):
+    cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
+    manager = _build_manager(cfg)
+    now = time.time()
+    manager.topic_details["t1"] = {"token_id": "t1", "condition_id": "cond-1"}
+    manager._append_orphan_token_record(
+        {
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 60.0)),
+            "updated_ts": float(now - 60.0),
+            "token_id": "t1",
+            "status": "orphaned",
+            "probe_attempts": 2,
+            "next_probe_at": float(now - 1.0),
+            "reason": "UNIT_TEST_ORPHAN",
+            "trigger_source": "unit_test",
+        }
+    )
+    manager._build_copytrade_active_token_set = lambda: {"t1"}  # type: ignore[assignment]
+    manager._refresh_sell_position_snapshot = lambda: ({}, "ok")  # type: ignore[assignment]
+    manager._load_copytrade_sell_signals = lambda: {}  # type: ignore[assignment]
+    manager._market_state_checker = types.SimpleNamespace(
+        check_market_state=lambda *args, **kwargs: autorun_mod.MarketState(
+            status=autorun_mod.MarketStatus.ACTIVE,
+            condition_id="cond-1",
+            token_id="t1",
+            data={"active": True, "closed": False},
+            checked_at=now,
+            is_tradeable=True,
+            refillable=True,
+        )
+    )
+
+    manager._run_orphan_recovery_probe(now)
+
+    rows = json.loads((manager.config.data_dir / "orphan_tokens.json").read_text(encoding="utf-8"))
+    latest = next(row for row in rows if row.get("token_id") == "t1")
+    assert latest.get("status") == "manual_only"
+    assert latest.get("reason") == "POSITIONS_NO_POSITION"
+    assert latest.get("next_probe_at") == 0.0
+    assert latest.get("note") == "official_positions_absent"
 
 
 def test_reentry_fill_above_line_is_recovered_into_reentry_hold(tmp_path):
