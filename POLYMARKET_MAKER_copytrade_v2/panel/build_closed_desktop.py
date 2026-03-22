@@ -182,6 +182,7 @@ def main() -> None:
     _run(
         common
         + [
+            "--onefile",
             "--windows-console-mode=disable",
             f"--include-data-dir={PANEL_DIR / 'static'}=static",
             f"--include-data-file={PANEL_DIR / 'README.md'}=README.md",

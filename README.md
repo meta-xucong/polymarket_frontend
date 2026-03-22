@@ -1,10 +1,14 @@
 # Polymarket 一体化版本（Web / Desktop / Android）
 
-这是当前可用版本的最简使用说明。
+这个仓库提供三个可用版本：
 
-## 1. 下载后先做这一步
+- 桌面版：`PolymarketDesktop_Final/PolymarketDesktop.exe`
+- 网页版：`PolymarketDesktop_Final/PolymarketWebPanel.exe`
+- 安卓版：`android/`（APK 由 GitHub Release 提供）
 
-只需要改 2 个配置文件里的“账户/私钥”字段：
+## 1. 下载后先改这两个账号文件
+
+只需要替换你自己的账户信息和私钥：
 
 - `POLYMARKET_MAKER_copytrade_v2/account.json`
   - `POLY_KEY`
@@ -13,27 +17,35 @@
   - `my_address`
   - `private_key`
 
-其他默认参数已经按当前版本预置，不用改。
+其他参数已经保留当前默认值，开箱可用。
 
 ## 2. 怎么打开
 
-### 网页版（推荐）
+推荐直接双击 `exe`：
 
-1. 双击：`备用启动_网页控制台.bat`
-2. 浏览器打开：`http://127.0.0.1:8787`
+- 桌面版：`PolymarketDesktop_Final/PolymarketDesktop.exe`
+- 网页版：`PolymarketDesktop_Final/PolymarketWebPanel.exe`
 
-### 桌面版
+备用入口（根目录）：
 
-1. 双击：`备用启动_本地桌面版.bat`
-2. 会打开桌面窗口（底层仍是同一个控制面板）
+- `LaunchDesktop.bat`
+- `LaunchWeb.bat`
+- `备用启动_本地桌面版.bat`
+- `备用启动_网页控制台.bat`
 
-### 安卓版
+网页版默认地址：`http://127.0.0.1:8787`
 
-1. 到 GitHub Release 下载 APK
-2. 安装后打开即可
-3. 注意：安卓版是远程壳，必须先有可访问的 Web 面板（本地或 VPS）
+## 3. 安卓版说明
 
-## 3. VPS 部署（简版）
+安卓版是 Web 壳，必须先有可访问的 Web 面板（本机或 VPS）。
+
+流程：
+
+1. 先启动网页版并确认可访问。
+2. 再安装 APK。
+3. 安卓端访问你的面板地址。
+
+## 4. VPS 部署（简版）
 
 部署目录：`deploy/`
 
@@ -43,15 +55,9 @@
 - `deploy/panel.env.example`
 - `deploy/nginx/polymarket_panel.conf.example`
 
-先在 VPS 跑 `install_instance.sh`，再配反向代理域名，最后用手机访问域名确认可用。
-
-## 4. 目录说明（只看这几个）
-
-- `POLYMARKET_MAKER_copytrade_v2/`：主运行时 + 控制面板
-- `POLY_SMARTMONEY/`：v3 multi 相关
-- `android/`：Android 壳工程（Capacitor）
-- `deploy/`：VPS 部署脚本
+先跑安装脚本，再配置域名反代，最后用手机访问域名验证。
 
 ## 5. 安全提醒
 
-不要把真实私钥提交到 GitHub。仓库中的默认账户文件已做脱敏处理。
+- 仓库默认账户文件已脱敏。
+- 不要把真实私钥提交到 GitHub。
