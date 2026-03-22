@@ -5,13 +5,13 @@ After=network.target
 [Service]
 Type=simple
 User=__RUN_USER__
-WorkingDirectory=__APP_ROOT__/POLYMARKET_MAKER_copytrade_v2/copytrade
+WorkingDirectory=__APP_ROOT__/POLYMARKET_MAKER_copytrade_v3/copytrade
 Environment="PATH=__PYTHON_BIN_DIR__:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/bin/bash -lc 'set -a; [ -f __ENV_FILE__ ] && source __ENV_FILE__; set +a; exec __PYTHON_BIN__ copytrade_run.py --config __APP_ROOT__/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_config.json'
+ExecStart=/bin/bash -lc 'set -a; [ -f __ENV_FILE__ ] && source __ENV_FILE__; set +a; exec __PYTHON_BIN__ copytrade_run.py --config __APP_ROOT__/POLYMARKET_MAKER_copytrade_v3/copytrade/copytrade_config.json'
 Restart=always
 RestartSec=10
-StandardOutput=append:__APP_ROOT__/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_systemd.log
-StandardError=append:__APP_ROOT__/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_systemd.log
+StandardOutput=append:__APP_ROOT__/POLYMARKET_MAKER_copytrade_v3/copytrade/copytrade_systemd.log
+StandardError=append:__APP_ROOT__/POLYMARKET_MAKER_copytrade_v3/copytrade/copytrade_systemd.log
 
 [Install]
 WantedBy=multi-user.target

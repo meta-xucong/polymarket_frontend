@@ -31,7 +31,7 @@
       "reentry_line_ticks": 2,
       "reentry_zone_lower_pct": 0.02,
       "probe_break_pct": 0.08,
-      "daily_reentry_loss_circuit_breaker_pct": 0.1,
+      "daily_reentry_loss_circuit_breaker_pct": 0.10,
       "drawdown_step_per_cycle_pct": 0.01,
       "drawdown_step_per_cycle_ticks": 1,
       "confirm_rounds": 2,
@@ -89,3 +89,5 @@
     "ws_debug_raw": false
   }
 }
+
+

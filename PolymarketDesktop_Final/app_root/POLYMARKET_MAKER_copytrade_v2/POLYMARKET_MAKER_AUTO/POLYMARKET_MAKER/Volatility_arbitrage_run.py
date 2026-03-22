@@ -40,13 +40,6 @@ import requests
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date, time as dtime
 from json import JSONDecodeError
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from account_loader import get_account_value
-
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except Exception:  # pragma: no cover - 兼容无 zoneinfo 的环境
@@ -73,6 +66,12 @@ from maker_execution import (
     PriceNoneStreakError,
     set_price_none_exit_threshold,
     set_price_invalid_timeout_sec,
+)
+from runtime_position_truth import (
+    POSITION_TRUTH_ACTIONABLE,
+    POSITION_TRUTH_DUST,
+    classify_position_truth,
+    is_position_truth_terminal,
 )
 
 # ========== 错误日志记录函数 ==========
@@ -209,9 +208,14 @@ def _is_buy_stage_active_for_inactive_release(
 ) -> bool:
     if sell_only_active or now_ts < buy_cooldown_until:
         return False
-    dust_floor = max(float(effective_min_order_size or 0.0), 1e-4)
     for pos in (local_position_size, _extract_position_size({"position_size": strategy_position_size})):
-        if pos is not None and float(pos) > dust_floor:
+        if (
+            classify_position_truth(
+                pos,
+                market_min_order_size=effective_min_order_size,
+            )
+            == POSITION_TRUTH_ACTIONABLE
+        ):
             return False
     awaiting_val = getattr(awaiting, "value", awaiting)
     if awaiting_val in {ActionType.BUY, ActionType.SELL, "BUY", "SELL"}:
@@ -1402,10 +1406,13 @@ def _merge_remote_position_size(
             return None
         if normalized <= 0:
             return None
-        floor = eps
-        if apply_dust and isinstance(dust_floor, (int, float)):
-            floor = max(float(dust_floor), floor)
-        if normalized + eps < floor:
+        if apply_dust and is_position_truth_terminal(
+            classify_position_truth(
+                normalized,
+                market_min_order_size=dust_floor,
+                zero_epsilon=eps,
+            )
+        ):
             return None
         return normalized
 
@@ -1438,7 +1445,7 @@ def _should_attempt_claim(
 
 
 def _resolve_client_host(client) -> str:
-    env_host = get_account_value("POLY_HOST")
+    env_host = os.getenv("POLY_HOST")
     if isinstance(env_host, str) and env_host.strip():
         return env_host.strip().rstrip("/")
 
@@ -1513,8 +1520,8 @@ def _extract_api_creds(client) -> Optional[Dict[str, str]]:
     if key and secret:
         candidates.append({"key": key, "secret": secret})
     # 兼容直接从环境变量注入 API key/secret 的场景
-    env_key = get_account_value("POLY_API_KEY")
-    env_secret = get_account_value("POLY_API_SECRET")
+    env_key = os.getenv("POLY_API_KEY")
+    env_secret = os.getenv("POLY_API_SECRET")
     if env_key and env_secret:
         candidates.append({"key": env_key, "secret": env_secret})
 
@@ -1651,7 +1658,7 @@ def _resolve_wallet_address(client) -> Tuple[Optional[str], str]:
         "POLY_FUNDER",
     )
     for env_name in env_candidates:
-        cand = get_account_value(env_name)
+        cand = os.getenv(env_name)
         address = _normalize_wallet_address(cand)
         if address:
             return address, f"env:{env_name}"
@@ -3101,9 +3108,37 @@ def main(run_config: Optional[Dict[str, Any]] = None):
     )
     awaiting_sell_since: Optional[float] = None
     buy_cooldown_until = 0.0
+    cycle_phase = "READY_NEXT_BUY"
+
+    def _set_cycle_phase(next_phase: str, *, reason: str) -> None:
+        nonlocal cycle_phase
+        normalized = str(next_phase or "").strip().upper() or "READY_NEXT_BUY"
+        if normalized == cycle_phase:
+            return
+        print(
+            f"[CYCLE_PHASE] {cycle_phase} -> {normalized} reason={reason}"
+        )
+        cycle_phase = normalized
+
+    def _defer_buy_until(target_ts: float, *, reason: str) -> None:
+        nonlocal buy_cooldown_until
+        normalized_target = float(target_ts or 0.0)
+        if normalized_target <= buy_cooldown_until + 1e-9:
+            return
+        buy_cooldown_until = normalized_target
+        remaining = max(0.0, normalized_target - time.time())
+        print(
+            f"[COOLDOWN][SET] reason={reason} until={normalized_target:.3f} remaining={remaining:.1f}s"
+        )
+
+    def _push_buy_cooldown(duration_sec: float, *, reason: str) -> None:
+        duration = max(0.0, float(duration_sec or 0.0))
+        if duration <= 0:
+            return
+        _defer_buy_until(time.time() + duration, reason=reason)
 
     def _apply_runtime_cycle_state(*, log_source: str) -> Dict[str, Any]:
-        nonlocal drop_pct, profit_pct, buy_cooldown_until, last_runtime_cycle_gate_log_ts
+        nonlocal drop_pct, profit_pct, last_runtime_cycle_gate_log_ts
         state = _load_runtime_cycle_state()
         if not state:
             return {}
@@ -3127,10 +3162,11 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         next_buy_allowed_ts = max(
             0.0, float(state.get("next_buy_allowed_ts", 0.0) or 0.0)
         )
-        if next_buy_allowed_ts > buy_cooldown_until:
-            buy_cooldown_until = next_buy_allowed_ts
         now_ts = time.time()
+        if next_buy_allowed_ts > buy_cooldown_until:
+            _defer_buy_until(next_buy_allowed_ts, reason=f"{log_source}:cycle_gate")
         if next_buy_allowed_ts > now_ts and now_ts - last_runtime_cycle_gate_log_ts >= 20.0:
+            _set_cycle_phase("INTER_CYCLE_COOLDOWN", reason=f"{log_source}:cycle_gate_active")
             remaining = int(max(0.0, next_buy_allowed_ts - now_ts))
             target_text = time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(next_buy_allowed_ts)
@@ -3139,6 +3175,8 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 f"[CYCLE_GATE][{log_source}] buy gate active, remaining={remaining}s until {target_text}"
             )
             last_runtime_cycle_gate_log_ts = now_ts
+        elif cycle_phase == "INTER_CYCLE_COOLDOWN" and now_ts >= next_buy_allowed_ts:
+            _set_cycle_phase("READY_NEXT_BUY", reason=f"{log_source}:cycle_gate_elapsed")
         return state
 
     _apply_runtime_cycle_state(log_source="INIT")
@@ -3210,6 +3248,29 @@ def main(run_config: Optional[Dict[str, Any]] = None):
             "[INIT] 已启用启动仅卖出模式："
             f"reason={force_sell_only_reason}，启动后直接进入 SELL-ONLY"
         )
+
+    def _clear_exit_signal_after_flat(source: str) -> None:
+        if not exit_signal_path:
+            return
+        try:
+            payload = _read_exit_signal_payload()
+            if not payload:
+                payload = {"token_id": str(token_id or "")}
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            payload["active"] = False
+            payload["status"] = "done"
+            payload["consumed_at"] = now_iso
+            payload["consumed_by"] = str(source or "")
+            payload["invalidate_reason"] = "position_flat"
+            payload["updated_at"] = now_iso
+            with exit_signal_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            print(f"[EXIT] 清仓完成后已失效化 exit signal: source={source}")
+        except OSError as exc:
+            print(
+                f"[EXIT][WARN] 清仓完成但失效化 exit signal 失败: "
+                f"source={source} error={exc}"
+            )
 
     def _exit_cleanup_only(reason: str) -> None:
         """
@@ -4554,29 +4615,6 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 )
         return False
 
-    def _clear_exit_signal_after_flat(source: str) -> None:
-        if not exit_signal_path:
-            return
-        try:
-            payload = _read_exit_signal_payload()
-            if not payload:
-                payload = {"token_id": str(token_id or "")}
-            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            payload["active"] = False
-            payload["status"] = "done"
-            payload["consumed_at"] = now_iso
-            payload["consumed_by"] = str(source or "")
-            payload["invalidate_reason"] = "position_flat"
-            payload["updated_at"] = now_iso
-            with exit_signal_path.open("w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            print(f"[EXIT] 清仓完成后已失效化 exit signal: source={source}")
-        except OSError as exc:
-            print(
-                f"[EXIT][WARN] 清仓完成但失效化 exit signal 失败: "
-                f"source={source} error={exc}"
-            )
-
     def _safe_topic_filename(topic_id: str) -> str:
         """与调度层保持一致的文件名安全化处理"""
         return topic_id.replace("/", "_").replace("\\", "_")
@@ -4830,13 +4868,15 @@ def main(run_config: Optional[Dict[str, Any]] = None):
 
     def _has_actionable_position(status_snapshot: Optional[Dict[str, Any]] = None) -> bool:
         status_snapshot = status_snapshot or strategy.status()
-        dust_floor = max(effective_min_order_size or 0.0, 1e-4)
         for candidate in (position_size, _extract_position_size(status_snapshot)):
-            try:
-                if candidate is not None and float(candidate) > dust_floor:
-                    return True
-            except (TypeError, ValueError):
-                continue
+            if (
+                classify_position_truth(
+                    candidate,
+                    market_min_order_size=effective_min_order_size,
+                )
+                == POSITION_TRUTH_ACTIONABLE
+            ):
+                return True
         return False
 
     print("[INIT][TRACE] 3. 准备初始化变量和策略状态...")
@@ -5018,6 +5058,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 return
             _anchor_note_position_avg(fallback_px, source=reason)
             strategy.on_buy_filled(fallback_px, total_position=new_size, size=0.0)
+            _set_cycle_phase("IN_CYCLE", reason="resume_existing_position")
             print(
                 f"[STATE] 同步策略持仓 -> price={fallback_px:.4f} size={new_size:.4f}"
             )
@@ -5473,6 +5514,11 @@ def main(run_config: Optional[Dict[str, Any]] = None):
             print(f"[ERR] {source} 卖出挂单异常：{exc}")
             err_text = str(exc or "")
             err_text_lower = err_text.lower()
+            invalid_price_error = (
+                "price (" in err_text_lower
+                and "max:" in err_text_lower
+                and "min:" in err_text_lower
+            )
             missing_orderbook = (
                 "no orderbook exists for the requested token id" in err_text_lower
                 or ("orderbook" in err_text_lower and "does not exist" in err_text_lower)
@@ -5492,6 +5538,10 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     strategy.stop("market closed")
                     stop_event.set()
                     return
+            if invalid_price_error:
+                strategy.mark_awaiting(ActionType.SELL)
+                strategy.on_reject(f"sell invalid price: {exc}")
+                return
             strategy.on_reject(str(exc))
             return
 
@@ -5534,11 +5584,12 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         sell_avg = sell_resp.get("avg_price")
         eps = 1e-4
         sell_remaining = float(sell_resp.get("remaining") or 0.0)
-        dust_threshold = effective_min_order_size if effective_min_order_size and effective_min_order_size > 0 else None
-        treat_as_dust = False
-        if dust_threshold is not None and sell_remaining > eps:
-            if sell_remaining < dust_threshold - 1e-9:
-                treat_as_dust = True
+        sell_remaining_truth = classify_position_truth(
+            sell_remaining,
+            market_min_order_size=effective_min_order_size,
+            zero_epsilon=eps,
+        )
+        treat_as_dust = sell_remaining_truth == POSITION_TRUTH_DUST
         remaining_for_strategy = None if treat_as_dust else sell_remaining
         strategy.on_sell_filled(
             avg_price=sell_avg if sell_filled > 0 else None,
@@ -5561,8 +5612,8 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     incremental_profit_pct_cap=run_cfg.get("incremental_profit_pct_cap"),
                 )
                 next_buy_ts = float(cycle_record.get("next_buy_allowed_ts", 0.0) or 0.0)
-                if next_buy_ts > buy_cooldown_until:
-                    buy_cooldown_until = next_buy_ts
+                _set_cycle_phase("INTER_CYCLE_COOLDOWN", reason="sell_round_closed")
+                _defer_buy_until(next_buy_ts, reason="sell_round_closed")
                 print(
                     f"[CYCLE_GATE][SELL] round={int(cycle_record.get('cycle_round', 0) or 0)} "
                     f"next_buy_allowed_ts={next_buy_ts:.3f}"
@@ -5862,6 +5913,8 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         pending_buy = None
                 
                 if pending_buy is not None and now >= buy_cooldown_until:
+                    if cycle_phase == "INTER_CYCLE_COOLDOWN":
+                        _set_cycle_phase("READY_NEXT_BUY", reason="pending_buy_cooldown_elapsed")
                     if sell_only_event.is_set():
                         print("[COUNTDOWN] 仍在仅卖出模式内，丢弃待执行的买入信号。")
                         strategy.on_reject("sell-only window active")
@@ -5872,11 +5925,16 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         state = status.get("state")
                         awaiting = status.get("awaiting")
                         # 使用本地与策略两侧的持仓快照，避免残留仓位时误买
-                        dust_floor = max(effective_min_order_size or 0.0, 1e-4)
                         strat_pos = status.get("position_size")
                         has_position = False
                         for pos in (position_size, strat_pos):
-                            if pos is not None and pos > dust_floor:
+                            if (
+                                classify_position_truth(
+                                    pos,
+                                    market_min_order_size=effective_min_order_size,
+                                )
+                                == POSITION_TRUTH_ACTIONABLE
+                            ):
                                 has_position = True
                                 break
 
@@ -6275,7 +6333,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     defer_cooldown = short_buy_cooldown
                     if gate.retry_at_ts is not None:
                         defer_cooldown = max(gate.retry_at_ts - time.time(), defer_cooldown)
-                    buy_cooldown_until = time.time() + max(defer_cooldown, 0.1)
+                    _push_buy_cooldown(max(defer_cooldown, 0.1), reason="shock_guard_defer")
                     continue
                 if gate.decision == GateDecision.REJECT:
                     now_ts = time.time()
@@ -6316,7 +6374,6 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     continue
     
                 status = strategy.status()
-                dust_floor = max(effective_min_order_size or 0.0, 1e-4)
                 current_state = status.get("state")
                 awaiting = status.get("awaiting")
                 strat_pos = status.get("position_size")
@@ -6332,9 +6389,13 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         continue
                     raw_position = max(raw_position or 0.0, val)
                 if raw_position is not None:
-                    if raw_position > dust_floor:
+                    raw_truth = classify_position_truth(
+                        raw_position,
+                        market_min_order_size=effective_min_order_size,
+                    )
+                    if raw_truth == POSITION_TRUTH_ACTIONABLE:
                         actionable_position = raw_position
-                    else:
+                    elif raw_truth == POSITION_TRUTH_DUST:
                         treat_as_dust = True
     
                 if actionable_position is not None:
@@ -6343,7 +6404,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     )
                     pending_buy = action
                     pending_buy_ts = time.time()
-                    buy_cooldown_until = time.time() + short_buy_cooldown
+                    _push_buy_cooldown(short_buy_cooldown, reason="buy_block_position_exists")
                     # 计算清仓地板价：优先使用策略的入场价格，否则查询持仓均价
                     block_floor_hint: Optional[float] = None
                     if strategy.sell_trigger_price() is None:
@@ -6415,7 +6476,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     position_size = None
                     last_order_size = None
                     print(
-                        f"[BUY][DUST] 检测到尘埃仓位 {raw_position:.4f} < 最小挂单量 {dust_floor:.2f}，忽略并继续买入。"
+                        f"[BUY][DUST] 检测到尘埃仓位 {raw_position:.4f}，忽略并继续买入。"
                     )
                     status = strategy.status()
                     current_state = status.get("state")
@@ -6442,7 +6503,11 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         if numeric > combined_pos:
                             combined_pos = numeric
     
-                    if current_state != "FLAT" and (combined_pos is None or combined_pos <= dust_floor):
+                    combined_truth = classify_position_truth(
+                        combined_pos,
+                        market_min_order_size=effective_min_order_size,
+                    )
+                    if current_state != "FLAT" and is_position_truth_terminal(combined_truth):
                         fallback_px = bid if bid > 0 else ask
                         strategy.on_sell_filled(avg_price=fallback_px or 0.0, remaining=0.0)
                         position_size = None
@@ -6478,7 +6543,9 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     if pending_buy_ts is None:
                         pending_buy_ts = time.time()
                     continue
-    
+                if cycle_phase == "INTER_CYCLE_COOLDOWN":
+                    _set_cycle_phase("READY_NEXT_BUY", reason="pre_buy_cooldown_elapsed")
+
                 if max_position_cap is not None:
                     _maybe_refresh_position_size("[BUY][PRE]", force=True)
 
@@ -6624,7 +6691,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                             )
                         print("[BUY][GUARD] skip_buy=true and position exists, reject buy")
                         strategy.on_reject("skip_buy guard: existing position")
-                        buy_cooldown_until = time.time() + short_buy_cooldown
+                        _push_buy_cooldown(short_buy_cooldown, reason="skip_buy_guard_existing_position")
                         continue
                     skip_buy = False
                     skip_buy_guard_blocked_hits = 0
@@ -6653,7 +6720,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 except Exception as exc:
                     print(f"[ERR] 买入下单异常：{exc}")
                     strategy.on_reject(str(exc))
-                    buy_cooldown_until = time.time() + short_buy_cooldown
+                    _push_buy_cooldown(short_buy_cooldown, reason="buy_order_exception")
                     continue
                 print(f"[TRADE][BUY][MAKER] resp={buy_resp}")
                 _log_fills("BUY", buy_resp)
@@ -6840,6 +6907,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     if strategy_supports_total_position:
                         buy_filled_kwargs["total_position"] = position_size
                     strategy.on_buy_filled(**buy_filled_kwargs)
+                    _set_cycle_phase("IN_CYCLE", reason="buy_filled")
                     buy_inactive_since_ts = None
                     _anchor_note_buy(fill_px, position_avg=pos_avg_price)
                     print(
@@ -6849,7 +6917,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     reason_text = str(buy_resp)
                     print(f"[WARN] 买入未成交(status={buy_status or 'N/A'})：{reason_text}")
                     strategy.on_reject(reason_text)
-                buy_cooldown_until = time.time() + short_buy_cooldown
+                _push_buy_cooldown(short_buy_cooldown, reason="buy_unfilled")
     
                 if filled_amt <= 0:
                     continue

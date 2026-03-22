@@ -24,11 +24,6 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _panel_stop_requested() -> bool:
-    stop_file = os.getenv("POLY_PANEL_STOP_FILE")
-    return bool(stop_file and Path(stop_file).exists())
-
-
 def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -578,17 +573,11 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     logger.info("copytrade 启动 | poll_interval=%ss", poll_interval)
     while True:
-        if _panel_stop_requested():
-            logger.info("copytrade graceful stop requested by panel")
-            break
         try:
             run_once(config, base_dir=base_dir, client=client, logger=logger)
         except Exception as exc:
             logger.exception("copytrade 运行异常: %s", exc)
         if args.once:
-            break
-        if _panel_stop_requested():
-            logger.info("copytrade graceful stop requested by panel")
             break
         time.sleep(max(1.0, poll_interval))
 

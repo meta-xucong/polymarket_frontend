@@ -4,31 +4,178 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import yaml
-from runtime_paths import resolve_repo_root, resolve_v2_root, resolve_v3_root
+from runtime_paths import (
+    resolve_instance_root,
+    resolve_source_root,
+    resolve_v2_root,
+    resolve_v2_source_root,
+    resolve_v3_root,
+    resolve_v3_source_root,
+)
 
-
-REPO_ROOT = resolve_repo_root()
-BASE_DIR = resolve_v2_root()
-ACCOUNT_PATH = BASE_DIR / "account.json"
-COPYTRADE_CONFIG_PATH = BASE_DIR / "copytrade" / "copytrade_config.json"
+# Backward-compatible path constants (tests monkeypatch these names).
+V2_BASE_DIR = resolve_v2_root()
+ACCOUNT_PATH = V2_BASE_DIR / "account.json"
+COPYTRADE_CONFIG_PATH = V2_BASE_DIR / "copytrade" / "copytrade_config.json"
 GLOBAL_CONFIG_PATH = (
-    BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "global_config.json"
+    V2_BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "global_config.json"
 )
 RUN_PARAMS_PATH = (
-    BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "run_params.json"
+    V2_BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "run_params.json"
 )
 STRATEGY_DEFAULTS_PATH = (
-    BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "strategy_defaults.json"
+    V2_BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "strategy_defaults.json"
 )
-STATUS_PATH = BASE_DIR / "POLYMARKET_MAKER_AUTO" / "data" / "autorun_status.json"
-TOKENS_PATH = BASE_DIR / "copytrade" / "tokens_from_copytrade.json"
-COPYTRADE_STATE_PATH = BASE_DIR / "copytrade" / "copytrade_state.json"
+STATUS_PATH = V2_BASE_DIR / "POLYMARKET_MAKER_AUTO" / "data" / "autorun_status.json"
+TOKENS_PATH = V2_BASE_DIR / "copytrade" / "tokens_from_copytrade.json"
+COPYTRADE_STATE_PATH = V2_BASE_DIR / "copytrade" / "copytrade_state.json"
 V3_BASE_DIR = resolve_v3_root()
 V3_CONFIG_PATH = V3_BASE_DIR / "copytrade_config.json"
 V3_ACCOUNTS_PATH = V3_BASE_DIR / "accounts.json"
+
+
+def _instance_mode_enabled() -> bool:
+    # When instance root is explicit or differs from source root, write into instance scope.
+    override = str(os.getenv("POLY_INSTANCE_ROOT") or "").strip()
+    if override:
+        return True
+    return resolve_instance_root() != resolve_source_root()
+
+
+def _resolve_overlay_paths(
+    source_path: Path,
+    instance_candidates: List[Path],
+) -> Tuple[Path, Path]:
+    read_path = source_path
+    for candidate in instance_candidates:
+        if candidate.exists():
+            read_path = candidate
+            break
+
+    if _instance_mode_enabled():
+        write_path = next((path for path in instance_candidates if path.exists()), instance_candidates[0])
+    else:
+        write_path = read_path if read_path.exists() else source_path
+
+    return read_path, write_path
+
+
+def _resolve_v2_paths(*parts: str) -> Tuple[Path, Path]:
+    source = resolve_v2_source_root().joinpath(*parts)
+    instance_root = resolve_instance_root()
+    instance_candidates = [
+        instance_root / "v2" / Path(*parts),
+        instance_root / "POLYMARKET_MAKER_copytrade_v2" / Path(*parts),
+    ]
+    return _resolve_overlay_paths(source, instance_candidates)
+
+
+def _resolve_v3_paths(*parts: str) -> Tuple[Path, Path]:
+    source = resolve_v3_source_root().joinpath(*parts)
+    instance_root = resolve_instance_root()
+    instance_candidates = [
+        instance_root / "smartmoney" / Path(*parts),
+        instance_root / "POLY_SMARTMONEY" / "copytrade_v3_muti" / Path(*parts),
+    ]
+    return _resolve_overlay_paths(source, instance_candidates)
+
+
+def _account_paths() -> Tuple[Path, Path]:
+    default = resolve_v2_root() / "account.json"
+    if ACCOUNT_PATH != default:
+        return ACCOUNT_PATH, ACCOUNT_PATH
+    return _resolve_v2_paths("account.json")
+
+
+def _copytrade_config_paths() -> Tuple[Path, Path]:
+    default = resolve_v2_root() / "copytrade" / "copytrade_config.json"
+    if COPYTRADE_CONFIG_PATH != default:
+        return COPYTRADE_CONFIG_PATH, COPYTRADE_CONFIG_PATH
+    return _resolve_v2_paths("copytrade", "copytrade_config.json")
+
+
+def _global_config_paths() -> Tuple[Path, Path]:
+    default = (
+        resolve_v2_root() / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "global_config.json"
+    )
+    if GLOBAL_CONFIG_PATH != default:
+        return GLOBAL_CONFIG_PATH, GLOBAL_CONFIG_PATH
+    return _resolve_v2_paths(
+        "POLYMARKET_MAKER_AUTO",
+        "POLYMARKET_MAKER",
+        "config",
+        "global_config.json",
+    )
+
+
+def _run_params_paths() -> Tuple[Path, Path]:
+    default = (
+        resolve_v2_root() / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "run_params.json"
+    )
+    if RUN_PARAMS_PATH != default:
+        return RUN_PARAMS_PATH, RUN_PARAMS_PATH
+    return _resolve_v2_paths(
+        "POLYMARKET_MAKER_AUTO",
+        "POLYMARKET_MAKER",
+        "config",
+        "run_params.json",
+    )
+
+
+def _strategy_defaults_paths() -> Tuple[Path, Path]:
+    default = (
+        resolve_v2_root()
+        / "POLYMARKET_MAKER_AUTO"
+        / "POLYMARKET_MAKER"
+        / "config"
+        / "strategy_defaults.json"
+    )
+    if STRATEGY_DEFAULTS_PATH != default:
+        return STRATEGY_DEFAULTS_PATH, STRATEGY_DEFAULTS_PATH
+    return _resolve_v2_paths(
+        "POLYMARKET_MAKER_AUTO",
+        "POLYMARKET_MAKER",
+        "config",
+        "strategy_defaults.json",
+    )
+
+
+def _status_paths() -> Tuple[Path, Path]:
+    default = resolve_v2_root() / "POLYMARKET_MAKER_AUTO" / "data" / "autorun_status.json"
+    if STATUS_PATH != default:
+        return STATUS_PATH, STATUS_PATH
+    return _resolve_v2_paths("POLYMARKET_MAKER_AUTO", "data", "autorun_status.json")
+
+
+def _tokens_paths() -> Tuple[Path, Path]:
+    default = resolve_v2_root() / "copytrade" / "tokens_from_copytrade.json"
+    if TOKENS_PATH != default:
+        return TOKENS_PATH, TOKENS_PATH
+    return _resolve_v2_paths("copytrade", "tokens_from_copytrade.json")
+
+
+def _copytrade_state_paths() -> Tuple[Path, Path]:
+    default = resolve_v2_root() / "copytrade" / "copytrade_state.json"
+    if COPYTRADE_STATE_PATH != default:
+        return COPYTRADE_STATE_PATH, COPYTRADE_STATE_PATH
+    return _resolve_v2_paths("copytrade", "copytrade_state.json")
+
+
+def _v3_config_paths() -> Tuple[Path, Path]:
+    default = resolve_v3_root() / "copytrade_config.json"
+    if V3_CONFIG_PATH != default:
+        return V3_CONFIG_PATH, V3_CONFIG_PATH
+    return _resolve_v3_paths("copytrade_config.json")
+
+
+def _v3_accounts_paths() -> Tuple[Path, Path]:
+    default = resolve_v3_root() / "accounts.json"
+    if V3_ACCOUNTS_PATH != default:
+        return V3_ACCOUNTS_PATH, V3_ACCOUNTS_PATH
+    return _resolve_v3_paths("accounts.json")
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -53,6 +200,19 @@ def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def _atomic_write_json_with_optional_mirror(
+    path: Path,
+    payload: Dict[str, Any],
+    mirror_path: Path | None = None,
+) -> None:
+    _atomic_write_json(path, payload)
+    if mirror_path is None:
+        return
+    if path.resolve() == mirror_path.resolve():
+        return
+    _atomic_write_json(mirror_path, payload)
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -126,9 +286,10 @@ def _extract_min_size(copytrade_cfg: Dict[str, Any]) -> float:
 
 
 def _read_v3_accounts_file() -> Dict[str, Any]:
-    payload = _read_any_json(V3_ACCOUNTS_PATH)
+    read_path, _ = _v3_accounts_paths()
+    payload = _read_any_json(read_path)
     if not isinstance(payload, dict):
-        raise ValueError(f"JSON object expected: {V3_ACCOUNTS_PATH}")
+        raise ValueError(f"JSON object expected: {read_path}")
     return payload
 
 
@@ -181,7 +342,8 @@ def _get_v3_account(accounts_payload: Dict[str, Any], index: int) -> Dict[str, A
 
 
 def get_account_payload() -> Dict[str, Any]:
-    payload = _read_json(ACCOUNT_PATH)
+    read_path, _ = _account_paths()
+    payload = _read_json(read_path)
     return {
         "POLY_HOST": str(payload.get("POLY_HOST") or "https://clob.polymarket.com"),
         "POLY_CHAIN_ID": _coerce_int(payload.get("POLY_CHAIN_ID"), 137),
@@ -196,6 +358,8 @@ def get_account_payload() -> Dict[str, Any]:
 
 
 def save_account_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    _, write_path = _account_paths()
+    default_source_path = resolve_v2_source_root() / "account.json"
     current = get_account_payload()
     current.update(
         {
@@ -214,15 +378,18 @@ def save_account_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             ).strip(),
         }
     )
-    _atomic_write_json(ACCOUNT_PATH, current)
+    mirror_path = None
+    if ACCOUNT_PATH == default_source_path and _instance_mode_enabled():
+        mirror_path = default_source_path
+    _atomic_write_json_with_optional_mirror(write_path, current, mirror_path=mirror_path)
     return get_account_payload()
 
 
 def get_settings_payload() -> Dict[str, Any]:
-    copytrade_cfg = _read_json(COPYTRADE_CONFIG_PATH)
-    global_cfg = _read_json(GLOBAL_CONFIG_PATH)
-    run_cfg = _read_json(RUN_PARAMS_PATH)
-    strategy_defaults = _read_json(STRATEGY_DEFAULTS_PATH)
+    copytrade_cfg = _read_json(_copytrade_config_paths()[0])
+    global_cfg = _read_json(_global_config_paths()[0])
+    run_cfg = _read_json(_run_params_paths()[0])
+    strategy_defaults = _read_json(_strategy_defaults_paths()[0])
 
     scheduler = global_cfg.get("scheduler") if isinstance(global_cfg.get("scheduler"), dict) else {}
     defaults = (
@@ -261,10 +428,15 @@ def get_settings_payload() -> Dict[str, Any]:
 
 
 def save_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    copytrade_cfg = _read_json(COPYTRADE_CONFIG_PATH)
-    global_cfg = _read_json(GLOBAL_CONFIG_PATH)
-    run_cfg = _read_json(RUN_PARAMS_PATH)
-    strategy_defaults = _read_json(STRATEGY_DEFAULTS_PATH)
+    copytrade_read, copytrade_write = _copytrade_config_paths()
+    global_read, global_write = _global_config_paths()
+    run_read, run_write = _run_params_paths()
+    defaults_read, defaults_write = _strategy_defaults_paths()
+
+    copytrade_cfg = _read_json(copytrade_read)
+    global_cfg = _read_json(global_read)
+    run_cfg = _read_json(run_read)
+    strategy_defaults = _read_json(defaults_read)
 
     copytrade_in = payload.get("copytrade") if isinstance(payload.get("copytrade"), dict) else {}
     scheduler_in = payload.get("scheduler") if isinstance(payload.get("scheduler"), dict) else {}
@@ -361,10 +533,37 @@ def save_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             strategy_in.get("shock_drop_pct"), shock_guard.get("shock_drop_pct", 0.1)
         )
 
-    _atomic_write_json(COPYTRADE_CONFIG_PATH, copytrade_cfg)
-    _atomic_write_json(GLOBAL_CONFIG_PATH, global_cfg)
-    _atomic_write_json(RUN_PARAMS_PATH, run_cfg)
-    _atomic_write_json(STRATEGY_DEFAULTS_PATH, strategy_defaults)
+    copytrade_source = resolve_v2_source_root() / "copytrade" / "copytrade_config.json"
+    global_source = (
+        resolve_v2_source_root()
+        / "POLYMARKET_MAKER_AUTO"
+        / "POLYMARKET_MAKER"
+        / "config"
+        / "global_config.json"
+    )
+    run_source = (
+        resolve_v2_source_root()
+        / "POLYMARKET_MAKER_AUTO"
+        / "POLYMARKET_MAKER"
+        / "config"
+        / "run_params.json"
+    )
+    defaults_source = (
+        resolve_v2_source_root()
+        / "POLYMARKET_MAKER_AUTO"
+        / "POLYMARKET_MAKER"
+        / "config"
+        / "strategy_defaults.json"
+    )
+    copytrade_mirror = copytrade_source if COPYTRADE_CONFIG_PATH == copytrade_source and _instance_mode_enabled() else None
+    global_mirror = global_source if GLOBAL_CONFIG_PATH == global_source and _instance_mode_enabled() else None
+    run_mirror = run_source if RUN_PARAMS_PATH == run_source and _instance_mode_enabled() else None
+    defaults_mirror = defaults_source if STRATEGY_DEFAULTS_PATH == defaults_source and _instance_mode_enabled() else None
+
+    _atomic_write_json_with_optional_mirror(copytrade_write, copytrade_cfg, mirror_path=copytrade_mirror)
+    _atomic_write_json_with_optional_mirror(global_write, global_cfg, mirror_path=global_mirror)
+    _atomic_write_json_with_optional_mirror(run_write, run_cfg, mirror_path=run_mirror)
+    _atomic_write_json_with_optional_mirror(defaults_write, strategy_defaults, mirror_path=defaults_mirror)
     return get_settings_payload()
 
 
@@ -376,27 +575,29 @@ def _read_log_tail(path: Path, max_lines: int = 120) -> str:
 
 
 def _latest_autorun_log_path() -> Path | None:
-    log_dir = BASE_DIR / "POLYMARKET_MAKER_AUTO" / "logs" / "autorun"
+    v2_root = resolve_v2_root()
+    log_dir = v2_root / "POLYMARKET_MAKER_AUTO" / "logs" / "autorun"
     return _latest_log_path(log_dir, "autorun_main_*.log")
 
 
 def get_runtime_payload() -> Dict[str, Any]:
-    status = _read_json(STATUS_PATH)
-    tokens = _read_json(TOKENS_PATH)
-    copytrade_state = _read_json(COPYTRADE_STATE_PATH)
+    status = _read_json(_status_paths()[0])
+    tokens = _read_json(_tokens_paths()[0])
+    copytrade_state = _read_json(_copytrade_state_paths()[0])
     active_tokens = tokens.get("tokens") if isinstance(tokens.get("tokens"), list) else []
     autorun_log_path = _latest_autorun_log_path()
+    v2_root = resolve_v2_root()
     return {
         "autorun_status": status,
         "active_token_count": len(active_tokens),
         "copytrade_updated_at": copytrade_state.get("updated_at"),
-        "copytrade_log_tail": _read_log_tail(BASE_DIR / "copytrade" / "copytrade_systemd.log"),
+        "copytrade_log_tail": _read_log_tail(v2_root / "copytrade" / "copytrade_systemd.log"),
         "autorun_log_tail": _read_log_tail(autorun_log_path) if autorun_log_path else "",
     }
 
 
 def get_v3_settings_payload() -> Dict[str, Any]:
-    config = _read_json(V3_CONFIG_PATH)
+    config = _read_json(_v3_config_paths()[0])
     accounts_payload = _read_v3_accounts_file()
     account_summaries = _list_v3_accounts(accounts_payload)
     selected_index = 0 if account_summaries else None
@@ -444,7 +645,9 @@ def get_v3_settings_payload() -> Dict[str, Any]:
 
 
 def save_v3_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    config = _read_json(V3_CONFIG_PATH)
+    read_path, write_path = _v3_config_paths()
+    default_source_path = resolve_v3_source_root() / "copytrade_config.json"
+    config = _read_json(read_path)
     incoming = payload.get("global") if isinstance(payload.get("global"), dict) else payload
 
     if "target_addresses" in incoming:
@@ -537,7 +740,10 @@ def save_v3_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             config.get("lowp_max_order_usd", 2.0),
         )
 
-    _atomic_write_json(V3_CONFIG_PATH, config)
+    mirror_path = None
+    if V3_CONFIG_PATH == default_source_path and _instance_mode_enabled():
+        mirror_path = default_source_path
+    _atomic_write_json_with_optional_mirror(write_path, config, mirror_path=mirror_path)
     return get_v3_settings_payload()
 
 
@@ -572,6 +778,8 @@ def get_v3_account_payload(index: int | None) -> Dict[str, Any]:
 
 
 def save_v3_account_payload(index: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    _, write_path = _v3_accounts_paths()
+    default_source_path = resolve_v3_source_root() / "accounts.json"
     accounts_payload = _read_v3_accounts_file()
     raw_accounts = accounts_payload.get("accounts")
     if not isinstance(raw_accounts, list):
@@ -601,11 +809,16 @@ def save_v3_account_payload(index: int, payload: Dict[str, Any]) -> Dict[str, An
     else:
         account["max_notional_total"] = max_notional_total
 
-    _atomic_write_json(V3_ACCOUNTS_PATH, accounts_payload)
+    mirror_path = None
+    if V3_ACCOUNTS_PATH == default_source_path and _instance_mode_enabled():
+        mirror_path = default_source_path
+    _atomic_write_json_with_optional_mirror(write_path, accounts_payload, mirror_path=mirror_path)
     return get_v3_account_payload(index)
 
 
 def delete_v3_account_payload(index: int) -> Dict[str, Any]:
+    _, write_path = _v3_accounts_paths()
+    default_source_path = resolve_v3_source_root() / "accounts.json"
     accounts_payload = _read_v3_accounts_file()
     raw_accounts = accounts_payload.get("accounts")
     if not isinstance(raw_accounts, list):
@@ -616,17 +829,21 @@ def delete_v3_account_payload(index: int) -> Dict[str, Any]:
         raise ValueError(f"invalid account index: {index}")
 
     raw_accounts.pop(index)
-    _atomic_write_json(V3_ACCOUNTS_PATH, accounts_payload)
+    mirror_path = None
+    if V3_ACCOUNTS_PATH == default_source_path and _instance_mode_enabled():
+        mirror_path = default_source_path
+    _atomic_write_json_with_optional_mirror(write_path, accounts_payload, mirror_path=mirror_path)
     return get_v3_settings_payload()
 
 
 def get_v3_runtime_payload() -> Dict[str, Any]:
-    config = _read_json(V3_CONFIG_PATH)
+    v3_root = V3_BASE_DIR if V3_BASE_DIR != resolve_v3_root() else resolve_v3_root()
+    config = _read_json(_v3_config_paths()[0])
     accounts_payload = _read_v3_accounts_file()
     log_dir_value = str(config.get("log_dir") or "logs")
     log_dir = Path(log_dir_value)
     if not log_dir.is_absolute():
-        log_dir = V3_BASE_DIR / log_dir
+        log_dir = v3_root / log_dir
     log_path = _latest_log_path(log_dir, "copytrade_*.log")
     active_accounts = [
         item for item in _list_v3_accounts(accounts_payload) if item.get("enabled") is True
@@ -640,8 +857,13 @@ def get_v3_runtime_payload() -> Dict[str, Any]:
 
 
 def get_trading_yaml_text() -> str:
-    path = BASE_DIR / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER" / "config" / "trading.yaml"
-    if not path.exists():
+    read_path, _ = _resolve_v2_paths(
+        "POLYMARKET_MAKER_AUTO",
+        "POLYMARKET_MAKER",
+        "config",
+        "trading.yaml",
+    )
+    if not read_path.exists():
         return ""
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = yaml.safe_load(read_path.read_text(encoding="utf-8"))
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)

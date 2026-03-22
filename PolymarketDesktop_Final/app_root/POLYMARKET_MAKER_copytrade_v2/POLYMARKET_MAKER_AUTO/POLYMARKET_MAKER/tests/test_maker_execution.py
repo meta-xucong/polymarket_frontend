@@ -493,3 +493,60 @@ def test_maker_sell_shrinks_goal_and_cancels_active_order():
     assert client.cancelled, "expected active order to be cancelled after shrink"
     assert result["status"] == "FILLED"
     assert result["remaining"] == pytest.approx(0.0)
+
+
+def test_maker_sell_does_not_reduce_price_precision_from_ws_float(monkeypatch):
+    client = DummyClient(
+        status_sequences=[[{"status": "FILLED", "filledAmount": 1.0, "avgPrice": 0.91}]]
+    )
+
+    monkeypatch.setattr(
+        maker,
+        "_fetch_best_price",
+        lambda client, token_id, side: maker.PriceSample(0.88, 2) if side == "ask" else None,
+    )
+
+    stop_calls = {"n": 0}
+
+    def _stop_after_wait() -> bool:
+        stop_calls["n"] += 1
+        return stop_calls["n"] > 10
+
+    result = maker.maker_sell_follow_ask_with_floor_wait(
+        client,
+        token_id="asset",
+        position_size=1.0,
+        floor_X=0.91,
+        poll_sec=0.0,
+        min_order_size=0.0,
+        best_ask_fn=lambda: 0.9,
+        sleep_fn=lambda _: None,
+        price_decimals=2,
+        stop_check=_stop_after_wait,
+    )
+
+    assert client.created_orders == []
+    assert result["status"] == "STOPPED"
+    assert result["remaining"] == pytest.approx(1.0)
+
+
+def test_maker_sell_caps_overpriced_candidate_to_exchange_max():
+    client = DummyClient(
+        status_sequences=[[{"status": "FILLED", "filledAmount": 1.0, "avgPrice": 0.99}]]
+    )
+
+    result = maker.maker_sell_follow_ask_with_floor_wait(
+        client,
+        token_id="asset",
+        position_size=1.0,
+        floor_X=0.91,
+        poll_sec=0.0,
+        min_order_size=0.0,
+        best_ask_fn=lambda: 1.0,
+        sleep_fn=lambda _: None,
+        price_decimals=2,
+    )
+
+    assert client.created_orders, "expected capped sell order"
+    assert client.created_orders[0]["price"] == pytest.approx(0.99)
+    assert result["filled"] == pytest.approx(1.0)

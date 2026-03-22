@@ -38,6 +38,29 @@ body {
   margin-bottom: 24px;
 }
 
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 10px;
+  align-items: center;
+}
+
+.instance-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 380px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(21, 35, 29, 0.12);
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   text-transform: uppercase;
@@ -453,6 +476,55 @@ textarea {
   display: none;
 }
 
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top left, rgba(15, 108, 92, 0.22), transparent 38%),
+    radial-gradient(circle at bottom right, rgba(179, 82, 42, 0.2), transparent 40%),
+    rgba(17, 25, 20, 0.58);
+  backdrop-filter: blur(8px);
+}
+
+.auth-gate.hidden {
+  display: none;
+}
+
+.auth-card {
+  width: min(420px, calc(100vw - 24px));
+  padding: 24px;
+  border-radius: 20px;
+  border: 1px solid rgba(21, 35, 29, 0.12);
+  background: rgba(255, 251, 244, 0.96);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 12px;
+}
+
+.auth-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.auth-actions {
+  display: flex;
+  justify-content: end;
+}
+
+.auth-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: #912f20;
+  background: rgba(179, 82, 42, 0.12);
+  border: 1px solid rgba(179, 82, 42, 0.24);
+  font-size: 13px;
+}
+
 @keyframes spin {
   from {
     transform: rotate(0deg);
@@ -477,5 +549,52 @@ textarea {
   .hero {
     flex-direction: column;
     align-items: start;
+  }
+
+  .hero-actions {
+    width: 100%;
+    justify-content: start;
+  }
+
+  .instance-badge {
+    max-width: 100%;
+  }
+
+  .tab-tip,
+  .tooltip {
+    width: min(240px, calc(100vw - 48px));
+    left: 0;
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: calc(100vw - 20px);
+    padding: 18px 0 24px;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  button {
+    width: 100%;
+  }
+
+  .actions button,
+  .inline-actions button,
+  .submit-row button {
+    width: 100%;
+  }
+
+  .profile-link-row {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .log-viewer {
+    min-height: 240px;
   }
 }

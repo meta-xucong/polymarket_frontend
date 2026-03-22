@@ -1356,7 +1356,7 @@ def maker_sell_follow_ask_with_floor_wait(
 ) -> Dict[str, Any]:
     """Maintain a maker sell order while respecting a profit floor."""
 
-    price_cap = 0.999
+    price_cap = 0.99
     goal_size = max(_floor_to_dp(float(position_size), SELL_SIZE_DP), 0.0)
     api_min_qty = 0.0
     if min_order_size and min_order_size > 0:
@@ -1576,8 +1576,9 @@ def maker_sell_follow_ask_with_floor_wait(
         ask = ask_info.price if ask_info is not None else None
         if ask_info and ask_info.decimals is not None:
             detected_dp = _normalize_price_dp(ask_info.decimals)
-            if detected_dp != price_dp:
-                price_dp = detected_dp
+            desired_dp = max(price_dp, detected_dp)
+            if desired_dp != price_dp:
+                price_dp = desired_dp
                 tick = _order_tick(price_dp)
                 floor_float = _round_up_to_dp(floor_float, price_dp)
         if ask_validation_interval and now >= max(next_ask_validation, 0.0):
@@ -1588,8 +1589,9 @@ def maker_sell_follow_ask_with_floor_wait(
                 validated_price = float(validated.price)
                 if validated.decimals is not None:
                     detected_dp = _normalize_price_dp(validated.decimals)
-                    if detected_dp != price_dp:
-                        price_dp = detected_dp
+                    desired_dp = max(price_dp, detected_dp)
+                    if desired_dp != price_dp:
+                        price_dp = desired_dp
                         tick = _order_tick(price_dp)
                         floor_float = _round_up_to_dp(floor_float, price_dp)
                 tolerance = max(tick * 0.5, 1e-6)
@@ -1740,8 +1742,6 @@ def maker_sell_follow_ask_with_floor_wait(
                 aggressive_next_price_override = None
             if px_candidate > price_cap + 1e-12:
                 capped_px = _round_down_to_dp(price_cap, price_dp)
-                if capped_px < price_cap - 1e-12:
-                    capped_px = price_cap
                 print(
                     f"[MAKER][SELL] 价格超过上限，按 {capped_px:.{price_dp}f} 挂单 (原始 {px_candidate:.{price_dp}f})"
                 )
@@ -2022,8 +2022,9 @@ def maker_sell_follow_ask_with_floor_wait(
         ask = ask_info.price if ask_info is not None else None
         if ask_info and ask_info.decimals is not None:
             detected_dp = _normalize_price_dp(ask_info.decimals)
-            if detected_dp != price_dp:
-                price_dp = detected_dp
+            desired_dp = max(price_dp, detected_dp)
+            if desired_dp != price_dp:
+                price_dp = desired_dp
                 tick = _order_tick(price_dp)
                 floor_float = _round_up_to_dp(floor_float, price_dp)
         if not aggressive_mode:

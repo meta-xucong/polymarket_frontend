@@ -21,14 +21,6 @@ Polymarket CLOB API 接入主模块（最小版）
 """
 from py_clob_client.client import ClobClient
 import os
-import sys
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from account_loader import get_account_value, get_required_account_value
 
 # ---- 默认配置 ----
 DEFAULT_HOST = "https://clob.polymarket.com"
@@ -44,12 +36,12 @@ def _normalize_privkey(k: str) -> str:
 
 
 def init_client() -> ClobClient:
-    host = str(get_account_value("POLY_HOST", DEFAULT_HOST))
-    chain_id = int(get_account_value("POLY_CHAIN_ID", DEFAULT_CHAIN_ID))
-    signature_type = int(get_account_value("POLY_SIGNATURE", DEFAULT_SIGNATURE_TYPE))
+    host = os.getenv("POLY_HOST", DEFAULT_HOST)
+    chain_id = int(os.getenv("POLY_CHAIN_ID", str(DEFAULT_CHAIN_ID)))
+    signature_type = int(os.getenv("POLY_SIGNATURE", str(DEFAULT_SIGNATURE_TYPE)))
 
-    key = str(get_required_account_value("POLY_KEY"))
-    funder = str(get_required_account_value("POLY_FUNDER"))
+    key = os.environ["POLY_KEY"]
+    funder = os.environ["POLY_FUNDER"]
 
     key = _normalize_privkey(key)
 
@@ -82,8 +74,8 @@ if __name__ == "__main__":
     # 简单自检：仅做初始化，不发起额外网络调用
     c = get_client()
     print("[INIT] ClobClient 就绪。host=%s chain_id=%s signature_type=%s funder=%s" % (
-        str(get_account_value("POLY_HOST", DEFAULT_HOST)),
-        str(get_account_value("POLY_CHAIN_ID", DEFAULT_CHAIN_ID)),
-        str(get_account_value("POLY_SIGNATURE", DEFAULT_SIGNATURE_TYPE)),
-        str(get_account_value("POLY_FUNDER", "?"))[:10] + "...",
+        os.getenv("POLY_HOST", DEFAULT_HOST),
+        os.getenv("POLY_CHAIN_ID", str(DEFAULT_CHAIN_ID)),
+        os.getenv("POLY_SIGNATURE", str(DEFAULT_SIGNATURE_TYPE)),
+        os.environ.get("POLY_FUNDER", "?")[:10] + "...",
     ))

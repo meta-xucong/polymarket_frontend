@@ -10,7 +10,7 @@ namespace PolymarketDesktopLauncher
         private static void Main()
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            string runtimeExe = Path.Combine(baseDir, "webpanel_runtime", "PolymarketWebPanel.exe");
+            string runtimeExe = Path.Combine(baseDir, "desktop_runtime", "PolymarketDesktopRuntime.exe");
             if (!File.Exists(runtimeExe))
             {
                 return;
@@ -23,6 +23,7 @@ namespace PolymarketDesktopLauncher
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            startInfo.EnvironmentVariables["POLY_DESKTOP_APP_MODE"] = "desktop";
             startInfo.EnvironmentVariables["POLY_APP_ROOT"] = Path.Combine(baseDir, "app_root");
             startInfo.EnvironmentVariables["POLY_DESKTOP_BIN_DIR"] = Path.Combine(baseDir, "bin");
             startInfo.EnvironmentVariables["POLY_FORCE_SOURCE_SERVICES"] = "1";

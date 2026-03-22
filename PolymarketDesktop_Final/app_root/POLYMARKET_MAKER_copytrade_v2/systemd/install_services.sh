@@ -11,7 +11,7 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-TEMPLATE_DIR="$APP_ROOT/POLYMARKET_MAKER_copytrade_v2/systemd"
+TEMPLATE_DIR="$APP_ROOT/POLYMARKET_MAKER_copytrade_v3/systemd"
 if [[ ! -d "$TEMPLATE_DIR" ]]; then
   echo "[ERROR] 模板目录不存在: $TEMPLATE_DIR" >&2
   exit 1

@@ -1,32 +1,41 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Tuple
 from urllib.parse import parse_qs, urlparse
+
 from runtime_paths import (
     resolve_desktop_bin_dir,
+    resolve_instance_root,
     resolve_repo_root,
+    resolve_run_root,
+    resolve_source_root,
     resolve_v2_root,
     resolve_v3_root,
 )
 
 from config_store import (
+    delete_v3_account_payload,
     get_account_payload,
     get_runtime_payload,
     get_settings_payload,
     get_trading_yaml_text,
     get_v3_account_payload,
-    delete_v3_account_payload,
     get_v3_runtime_payload,
     get_v3_settings_payload,
     save_account_payload,
@@ -37,16 +46,173 @@ from config_store import (
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+SOURCE_ROOT = resolve_source_root()
 REPO_ROOT = resolve_repo_root()
-BASE_DIR = resolve_v2_root()
-V3_BASE_DIR = resolve_v3_root()
-RUN_DIR = Path(__file__).resolve().parent / "run"
-SERVICE_NAMES = {
-    "copytrade": "polymaker-copytrade.service",
-    "autorun": "polymaker-autorun.service",
-    "v3multi": "copytrade-v3-multi.service",
+INSTANCE_ROOT = resolve_instance_root()
+RUN_DIR = resolve_run_root() / "panel"
+
+SERVICE_DEFS: Dict[str, Dict[str, str]] = {
+    "copytrade": {
+        "systemd": "polymaker-copytrade.service",
+        "label": "Copytrade V2",
+    },
+    "autorun": {
+        "systemd": "polymaker-autorun.service",
+        "label": "Autorun V2",
+    },
+    "v3multi": {
+        "systemd": "copytrade-v3-multi.service",
+        "label": "SmartMoney V3 Multi",
+    },
 }
+
 LOCAL_SERVICE_SPECS: Dict[str, Dict[str, Any]] = {}
+SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+SESSION_COOKIE_NAME = "poly_panel_session"
+SESSION_TTL_SEC = int(str(os.getenv("POLY_SESSION_TTL_SEC") or "43200"))
+AUTH_REQUIRED = str(os.getenv("POLY_AUTH_REQUIRED") or "1").strip() != "0"
+SESSION_SECRET = str(os.getenv("POLY_SESSION_SECRET") or "").strip()
+DEFAULT_AUTH_USERNAME = str(os.getenv("POLY_AUTH_DEFAULT_USERNAME") or "admin").strip() or "admin"
+DEFAULT_AUTH_PASSWORD = str(os.getenv("POLY_AUTH_DEFAULT_PASSWORD") or "admin").strip() or "admin"
+AUTH_ITERATIONS = int(str(os.getenv("POLY_AUTH_PBKDF2_ITERATIONS") or "390000"))
+AUTH_STATE_PATH = INSTANCE_ROOT / "panel" / "auth.json"
+if not SESSION_SECRET:
+    SESSION_SECRET = secrets.token_urlsafe(32)
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _auth_default_state() -> Dict[str, Any]:
+    return {
+        "username": DEFAULT_AUTH_USERNAME,
+        "password_hash": "",
+        "password_salt": "",
+        "password_iterations": AUTH_ITERATIONS,
+        "must_change_credentials": True,
+        "updated_at": _utc_timestamp(),
+    }
+
+
+def _hash_password(password: str, salt: bytes, iterations: int) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    ).hex()
+
+
+def _build_password_record(password: str, iterations: int | None = None) -> Dict[str, Any]:
+    actual_iterations = int(iterations or AUTH_ITERATIONS)
+    salt = secrets.token_bytes(16)
+    return {
+        "password_salt": base64.b64encode(salt).decode("ascii"),
+        "password_hash": _hash_password(password, salt, actual_iterations),
+        "password_iterations": actual_iterations,
+    }
+
+
+def _write_auth_state(payload: Dict[str, Any]) -> Dict[str, Any]:
+    AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(AUTH_STATE_PATH.parent),
+        suffix=".tmp",
+        prefix=".auth_",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, AUTH_STATE_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return payload
+
+
+def _load_auth_state() -> Dict[str, Any]:
+    if AUTH_STATE_PATH.exists():
+        try:
+            payload = json.loads(AUTH_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    else:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    username = str(payload.get("username") or DEFAULT_AUTH_USERNAME).strip() or DEFAULT_AUTH_USERNAME
+    password_hash = str(payload.get("password_hash") or "")
+    password_salt = str(payload.get("password_salt") or "")
+    iterations = int(payload.get("password_iterations") or AUTH_ITERATIONS)
+    must_change = bool(payload.get("must_change_credentials", True))
+    updated_at = str(payload.get("updated_at") or _utc_timestamp())
+
+    if not password_hash or not password_salt:
+        seeded = _auth_default_state()
+        seeded.update(_build_password_record(DEFAULT_AUTH_PASSWORD, iterations))
+        return _write_auth_state(seeded)
+
+    normalized = {
+        "username": username,
+        "password_hash": password_hash,
+        "password_salt": password_salt,
+        "password_iterations": iterations,
+        "must_change_credentials": must_change,
+        "updated_at": updated_at,
+    }
+    return normalized
+
+
+def _public_auth_state() -> Dict[str, Any]:
+    state = _load_auth_state()
+    return {
+        "username": str(state.get("username") or DEFAULT_AUTH_USERNAME),
+        "must_change_credentials": bool(state.get("must_change_credentials", True)),
+        "updated_at": str(state.get("updated_at") or ""),
+    }
+
+
+def _verify_auth_credentials(username: str, password: str) -> bool:
+    state = _load_auth_state()
+    if username != str(state.get("username") or ""):
+        return False
+    try:
+        salt = base64.b64decode(str(state.get("password_salt") or "").encode("ascii"))
+    except Exception:
+        return False
+    expected = str(state.get("password_hash") or "")
+    actual = _hash_password(password, salt, int(state.get("password_iterations") or AUTH_ITERATIONS))
+    return hmac.compare_digest(actual, expected)
+
+
+def _update_auth_credentials(username: str, password: str) -> Dict[str, Any]:
+    clean_username = str(username or "").strip()
+    clean_password = str(password or "")
+    if len(clean_username) < 3:
+        raise ValueError("username must be at least 3 characters")
+    if len(clean_password) < 6:
+        raise ValueError("password must be at least 6 characters")
+
+    state = _load_auth_state()
+    updated = {
+        "username": clean_username,
+        "must_change_credentials": False,
+        "updated_at": _utc_timestamp(),
+    }
+    updated.update(_build_password_record(clean_password, int(state.get("password_iterations") or AUTH_ITERATIONS)))
+    _write_auth_state(updated)
+    SESSION_STORE.clear()
+    return _public_auth_state()
 
 
 def _windows_subprocess_kwargs() -> Dict[str, Any]:
@@ -101,58 +267,68 @@ def _resolve_local_service_specs() -> Dict[str, Dict[str, Any]]:
     python_cmd = _resolve_python_command()
     force_source = os.getenv("POLY_FORCE_SOURCE_SERVICES") == "1"
     bin_dir = resolve_desktop_bin_dir()
+    v2_root = resolve_v2_root()
+    v3_root = resolve_v3_root()
     copytrade_bin = _resolve_service_executable(bin_dir, "copytrade_v2_service")
-    # autorun binary still has a packaging issue around eth-hash backends.
-    # Keep panel control on source-python path until a stable frozen build replaces it.
-    autorun_bin = None
-    # v3 multi is kept on source-python fallback for now.
-    v3_bin = None
 
-    return {
+    specs = {
         "copytrade": {
-            "cwd": BASE_DIR / "copytrade",
+            "cwd": v2_root / "copytrade",
             "cmd": (
                 [str(copytrade_bin)]
                 if (not force_source) and copytrade_bin and copytrade_bin.exists()
                 else [*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"]
             ),
-            "log": BASE_DIR / "copytrade" / "copytrade_systemd.log",
+            "log": v2_root / "copytrade" / "copytrade_systemd.log",
         },
         "autorun": {
-            "cwd": BASE_DIR / "POLYMARKET_MAKER_AUTO",
-            "cmd": (
-                [str(autorun_bin)]
-                if (not force_source) and autorun_bin and autorun_bin.exists()
-                else [*python_cmd, "poly_maker_autorun.py", "--no-repl"]
-            ),
-            "log": BASE_DIR / "POLYMARKET_MAKER_AUTO" / "autorun_systemd.log",
+            "cwd": v2_root / "POLYMARKET_MAKER_AUTO",
+            "cmd": [*python_cmd, "poly_maker_autorun.py", "--no-repl"],
+            "log": v2_root / "POLYMARKET_MAKER_AUTO" / "autorun_systemd.log",
         },
         "v3multi": {
-            "cwd": V3_BASE_DIR,
-            "cmd": (
-                [str(v3_bin)]
-                if (not force_source) and v3_bin and v3_bin.exists()
-                else [*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"]
-            ),
-            "log": V3_BASE_DIR / "logs" / "panel_runtime.log",
+            "cwd": v3_root,
+            "cmd": [*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"],
+            "log": v3_root / "logs" / "panel_runtime.log",
         },
     }
+    LOCAL_SERVICE_SPECS.update(specs)
+    return LOCAL_SERVICE_SPECS
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
+def _json_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    payload: Dict[str, Any],
+    extra_headers: Dict[str, str] | None = None,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    if extra_headers:
+        for key, value in extra_headers.items():
+            handler.send_header(key, value)
     handler.end_headers()
     handler.wfile.write(body)
 
 
-def _text_response(handler: BaseHTTPRequestHandler, status: int, body: str, content_type: str) -> None:
+def _text_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    body: str,
+    content_type: str,
+    extra_headers: Dict[str, str] | None = None,
+) -> None:
     data = body.encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", f"{content_type}; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "no-store")
+    if extra_headers:
+        for key, value in extra_headers.items():
+            handler.send_header(key, value)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -253,13 +429,14 @@ def _tail_log(path: Path, max_lines: int = 20, max_chars: int = 2000) -> str:
 
 def _local_service_status() -> Dict[str, Any]:
     services: Dict[str, Any] = {}
-    for key in SERVICE_NAMES:
+    for key, meta in SERVICE_DEFS.items():
         pid = _read_pid(key)
         active = _pid_exists(pid)
         if pid and not active:
             _clear_pid(key)
         services[key] = {
             "service": key,
+            "label": meta["label"],
             "active": active,
             "raw": "active" if active else "inactive",
             "pid": pid if active else None,
@@ -289,6 +466,8 @@ def _start_local_service(service_key: str) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {}
     child_env = os.environ.copy()
     child_env["POLY_PANEL_STOP_FILE"] = str(_stop_file(service_key))
+    child_env.setdefault("POLY_APP_ROOT", str(SOURCE_ROOT))
+    child_env.setdefault("POLY_INSTANCE_ROOT", str(INSTANCE_ROOT))
     for env_key, env_value in get_account_payload().items():
         text = str(env_value or "").strip()
         if text:
@@ -376,20 +555,36 @@ def _service_status() -> Dict[str, Any]:
         return _local_service_status()
 
     services: Dict[str, Any] = {}
-    for key, service_name in SERVICE_NAMES.items():
+    for key, meta in SERVICE_DEFS.items():
+        service_name = meta["systemd"]
+        exists_ok, load_state = _run_command("systemctl", "show", service_name, "--property", "LoadState", "--value")
+        load_state_text = load_state.strip()
+        if (not exists_ok) or load_state_text == "not-found":
+            local_payload = _local_service_status()
+            local_service = dict(local_payload["services"][key])
+            local_service["service"] = service_name
+            local_service["label"] = meta["label"]
+            local_service["mode"] = "local-process"
+            services[key] = local_service
+            continue
+
         ok, output = _run_command("systemctl", "is-active", service_name)
         services[key] = {
             "service": service_name,
+            "label": meta["label"],
             "active": ok and output.strip() == "active",
             "raw": output.strip() or "unknown",
+            "mode": "systemd",
         }
-    return {"supported": True, "services": services}
+    return {"supported": True, "mode": "hybrid", "services": services}
 
 
 def _service_action(action: str, service_key: str) -> Dict[str, Any]:
-    service_name = SERVICE_NAMES.get(service_key)
-    if not service_name:
+    meta = SERVICE_DEFS.get(service_key)
+    if not meta:
         return {"ok": False, "message": f"unknown service: {service_key}"}
+    service_name = meta["systemd"]
+
     if shutil.which("systemctl") is None:
         if action == "start":
             return _start_local_service(service_key)
@@ -401,21 +596,230 @@ def _service_action(action: str, service_key: str) -> Dict[str, Any]:
                 return stopped
             return _start_local_service(service_key)
         return {"ok": False, "message": f"invalid action: {action}"}
+    exists_ok, load_state = _run_command("systemctl", "show", service_name, "--property", "LoadState", "--value")
+    if (not exists_ok) or load_state.strip() == "not-found":
+        if action == "start":
+            return _start_local_service(service_key)
+        if action == "stop":
+            return _stop_local_service(service_key)
+        if action == "restart":
+            stopped = _stop_local_service(service_key)
+            if not stopped.get("ok"):
+                return stopped
+            return _start_local_service(service_key)
+        return {"ok": False, "message": f"invalid action: {action}"}
+
     ok, output = _run_command("systemctl", action, service_name)
     return {"ok": ok, "message": output or ("ok" if ok else "failed"), "service": service_name}
 
 
+def _parse_cookie_map(raw_cookie: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for part in raw_cookie.split(";"):
+        item = part.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def _cookie_secure() -> bool:
+    return str(os.getenv("POLY_REVERSE_PROXY_MODE") or "").strip() in {"1", "https", "secure"}
+
+
+def _clear_expired_sessions() -> None:
+    now = _now()
+    expired = [token for token, item in SESSION_STORE.items() if float(item.get("exp", 0)) <= now]
+    for token in expired:
+        SESSION_STORE.pop(token, None)
+
+
+def _make_signed_token(raw_token: str) -> str:
+    signature = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        raw_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{raw_token}.{signature}"
+
+
+def _split_signed_token(value: str) -> Tuple[str, str] | None:
+    if "." not in value:
+        return None
+    raw, signature = value.rsplit(".", 1)
+    if not raw or not signature:
+        return None
+    return raw, signature
+
+
+def _verify_signed_token(value: str) -> str | None:
+    parsed = _split_signed_token(value)
+    if parsed is None:
+        return None
+    raw, signature = parsed
+    expected = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        raw.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return raw
+
+
+def _create_session(username: str) -> str:
+    _clear_expired_sessions()
+    raw_token = secrets.token_urlsafe(32)
+    SESSION_STORE[raw_token] = {"user": username, "exp": _now() + SESSION_TTL_SEC}
+    return _make_signed_token(raw_token)
+
+
+def _set_session_cookie(value: str) -> str:
+    attrs = [
+        f"{SESSION_COOKIE_NAME}={value}",
+        "HttpOnly",
+        "Path=/",
+        "SameSite=Strict",
+        f"Max-Age={SESSION_TTL_SEC}",
+    ]
+    if _cookie_secure():
+        attrs.append("Secure")
+    return "; ".join(attrs)
+
+
+def _clear_session_cookie() -> str:
+    attrs = [
+        f"{SESSION_COOKIE_NAME}=",
+        "HttpOnly",
+        "Path=/",
+        "SameSite=Strict",
+        "Max-Age=0",
+    ]
+    if _cookie_secure():
+        attrs.append("Secure")
+    return "; ".join(attrs)
+
+
+def _active_session(handler: BaseHTTPRequestHandler) -> Dict[str, Any] | None:
+    if not AUTH_REQUIRED:
+        return {"user": DEFAULT_AUTH_USERNAME, "exp": _now() + SESSION_TTL_SEC}
+
+    _clear_expired_sessions()
+    raw_cookie = str(handler.headers.get("Cookie") or "")
+    cookie_map = _parse_cookie_map(raw_cookie)
+    signed = cookie_map.get(SESSION_COOKIE_NAME)
+    if not signed:
+        return None
+    token = _verify_signed_token(signed)
+    if token is None:
+        return None
+    session = SESSION_STORE.get(token)
+    if not session:
+        return None
+    if float(session.get("exp", 0)) <= _now():
+        SESSION_STORE.pop(token, None)
+        return None
+    return session
+
+
+def _is_authenticated(handler: BaseHTTPRequestHandler) -> bool:
+    return _active_session(handler) is not None
+
+
+def _must_change_credentials(handler: BaseHTTPRequestHandler) -> bool:
+    session = _active_session(handler)
+    if not session:
+        return False
+    state = _load_auth_state()
+    return session.get("user") == state.get("username") and bool(state.get("must_change_credentials", True))
+
+
+def _public_api_path(path: str) -> bool:
+    return path in {"/api/ping", "/api/auth/login", "/api/auth/session", "/api/auth/logout"}
+
+
+def _auth_required_for(path: str) -> bool:
+    return path.startswith("/api/") and not _public_api_path(path)
+
+
+def _setup_allowed_path(path: str) -> bool:
+    return path in {"/api/auth/session", "/api/auth/logout", "/api/auth/credentials"}
+
+
+def _instance_payload() -> Dict[str, str]:
+    return {
+        "source_root": str(SOURCE_ROOT),
+        "instance_root": str(INSTANCE_ROOT),
+        "v2_root": str(resolve_v2_root()),
+        "v3_root": str(resolve_v3_root()),
+        "run_root": str(RUN_DIR),
+    }
+
+
 class PanelHandler(BaseHTTPRequestHandler):
-    server_version = "PolymarketPanel/0.1"
+    server_version = "PolymarketPanel/0.2"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return
 
+    def _touch_activity(self) -> None:
+        setattr(self.server, "last_request_ts", _now())
+
+    def _reject_unauthorized(self) -> None:
+        _json_response(
+            self,
+            HTTPStatus.UNAUTHORIZED,
+            {"error": "authentication required", "code": "AUTH_REQUIRED"},
+        )
+
+    def _reject_setup_required(self) -> None:
+        _json_response(
+            self,
+            HTTPStatus.FORBIDDEN,
+            {
+                "error": "credentials update required",
+                "code": "AUTH_SETUP_REQUIRED",
+                "auth": _public_auth_state(),
+            },
+        )
+
+    def _guard_auth(self, path: str) -> bool:
+        if not _auth_required_for(path):
+            return True
+        if not _is_authenticated(self):
+            self._reject_unauthorized()
+            return False
+        if _must_change_credentials(self) and not _setup_allowed_path(path):
+            self._reject_setup_required()
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
+        self._touch_activity()
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path == "/api/auth/session":
+            session = _active_session(self)
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "required": AUTH_REQUIRED,
+                    "authenticated": session is not None,
+                    "auth": _public_auth_state(),
+                    "must_change_credentials": _must_change_credentials(self),
+                    "username": str(session.get("user") or "") if session else "",
+                    "instance": _instance_payload(),
+                },
+            )
+            return
+
+        if not self._guard_auth(path):
+            return
         if path == "/api/account":
             _json_response(self, HTTPStatus.OK, {"account": get_account_payload()})
             return
@@ -425,7 +829,11 @@ class PanelHandler(BaseHTTPRequestHandler):
         if path == "/api/runtime":
             payload = get_runtime_payload()
             payload["services"] = _service_status()
+            payload["instance"] = _instance_payload()
             _json_response(self, HTTPStatus.OK, payload)
+            return
+        if path == "/api/ping":
+            _json_response(self, HTTPStatus.OK, {"ok": True})
             return
         if path == "/api/v3/settings":
             _json_response(self, HTTPStatus.OK, {"settings": get_v3_settings_payload()})
@@ -437,6 +845,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         if path == "/api/v3/runtime":
             payload = get_v3_runtime_payload()
             payload["services"] = _service_status()
+            payload["instance"] = _instance_payload()
             _json_response(self, HTTPStatus.OK, payload)
             return
         if path == "/api/trading-yaml":
@@ -470,11 +879,98 @@ class PanelHandler(BaseHTTPRequestHandler):
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        self._touch_activity()
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path == "/api/auth/login":
+            payload = _read_json_body(self)
+            username = str(payload.get("username") or "")
+            password = str(payload.get("password") or "")
+
+            if not AUTH_REQUIRED:
+                _json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "required": False,
+                        "authenticated": True,
+                        "instance": _instance_payload(),
+                    },
+                )
+                return
+
+            if not _verify_auth_credentials(username, password):
+                _json_response(
+                    self,
+                    HTTPStatus.UNAUTHORIZED,
+                    {"error": "invalid username or password"},
+                )
+                return
+
+            signed_token = _create_session(username)
+            auth_state = _public_auth_state()
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "required": True,
+                    "authenticated": True,
+                    "auth": auth_state,
+                    "must_change_credentials": bool(auth_state.get("must_change_credentials", True)),
+                    "username": auth_state.get("username", username),
+                    "instance": _instance_payload(),
+                },
+                extra_headers={"Set-Cookie": _set_session_cookie(signed_token)},
+            )
+            return
+
+        if path == "/api/auth/logout":
+            raw_cookie = str(self.headers.get("Cookie") or "")
+            cookie_map = _parse_cookie_map(raw_cookie)
+            signed = cookie_map.get(SESSION_COOKIE_NAME, "")
+            token = _verify_signed_token(signed) if signed else None
+            if token:
+                SESSION_STORE.pop(token, None)
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "authenticated": False},
+                extra_headers={"Set-Cookie": _clear_session_cookie()},
+            )
+            return
+
+        if not self._guard_auth(path):
+            return
+
         try:
+            if path == "/api/auth/credentials":
+                payload = _read_json_body(self)
+                username = str(payload.get("username") or "")
+                password = str(payload.get("password") or "")
+                password_confirm = str(payload.get("password_confirm") or "")
+                if password != password_confirm:
+                    raise ValueError("password confirmation does not match")
+                auth_state = _update_auth_credentials(username, password)
+                signed_token = _create_session(str(auth_state.get("username") or username))
+                _json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "required": True,
+                        "authenticated": True,
+                        "auth": auth_state,
+                        "must_change_credentials": False,
+                        "username": auth_state.get("username", username),
+                        "instance": _instance_payload(),
+                    },
+                    extra_headers={"Set-Cookie": _set_session_cookie(signed_token)},
+                )
+                return
             if path == "/api/account":
                 payload = _read_json_body(self)
                 _json_response(self, HTTPStatus.OK, {"account": save_account_payload(payload)})
@@ -520,17 +1016,22 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 def create_http_server(host: str, port: int) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), PanelHandler)
+    server = ThreadingHTTPServer((host, port), PanelHandler)
+    setattr(server, "last_request_ts", _now())
+    return server
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Polymarket local control panel")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8787, type=int)
+    parser.add_argument("--host", default=str(os.getenv("POLY_PANEL_HOST") or "127.0.0.1"))
+    parser.add_argument("--port", default=int(str(os.getenv("POLY_PANEL_PORT") or "8787")), type=int)
     args = parser.parse_args()
 
     server = create_http_server(args.host, args.port)
     print(f"[PANEL] listening on http://{args.host}:{args.port}")
+    print(f"[PANEL] source_root={SOURCE_ROOT}")
+    print(f"[PANEL] instance_root={INSTANCE_ROOT}")
+    print(f"[PANEL] auth_required={'1' if AUTH_REQUIRED else '0'}")
     server.serve_forever()
 
 

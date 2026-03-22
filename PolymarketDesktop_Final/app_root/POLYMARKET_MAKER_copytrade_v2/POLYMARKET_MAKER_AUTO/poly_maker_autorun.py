@@ -52,6 +52,11 @@ def _resolve_project_root() -> Path:
     if override:
         override_root = Path(override).resolve()
         candidates = (
+            override_root / "POLYMARKET_MAKER_copytrade_v3" / "POLYMARKET_MAKER_AUTO",
+            override_root
+            / "POLYMARKET_MAKER_copytrade"
+            / "POLYMARKET_MAKER_copytrade_v3"
+            / "POLYMARKET_MAKER_AUTO",
             override_root / "POLYMARKET_MAKER_copytrade_v2" / "POLYMARKET_MAKER_AUTO",
             override_root
             / "POLYMARKET_MAKER_copytrade"
@@ -72,8 +77,6 @@ REPO_ROOT = PROJECT_ROOT.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from account_loader import get_account_value
-
 # =====================
 # 市场状态检测模块（新增）- 必须在 sys.path 修改后导入
 # =====================
@@ -93,6 +96,14 @@ try:
 except ImportError as e:
     print(f"[WARNING] market_state_checker 模块导入失败: {e}")
     MARKET_STATE_CHECKER_AVAILABLE = False
+
+from runtime_position_truth import (
+    POSITION_TRUTH_ACTIONABLE,
+    POSITION_TRUTH_DUST,
+    classify_position_truth,
+    extract_market_min_order_size,
+    is_position_truth_terminal,
+)
 
 DEFAULT_GLOBAL_CONFIG = {
     "copytrade_poll_sec": 30.0,
@@ -279,7 +290,7 @@ POSITION_CHECK_NEGATIVE_CACHE_TTL_SEC = 1800.0
 SELL_SIGNAL_REPLAY_WARMUP_SEC = 300.0
 SOURCE_DETACHED_HOLD_SEC = 20 * 60.0
 EXIT_ORDERBOOK_MISSING_BACKOFF_SCHEDULE_SEC = (5 * 60.0, 15 * 60.0, 30 * 60.0)
-POSITION_CLEANUP_DUST_THRESHOLD = 0.5
+POSITION_TRUTH_FALLBACK_MIN_ORDER_SIZE = 0.5
 EXIT_CLEANUP_MAX_RETRIES = 3
 STOPLOSS_NOFILL_SELL_ONLY_MAX_REQUEUES = 3
 SELL_SIGNAL_FORCE_CLEANUP_TIMEOUT_SEC = 45.0
@@ -304,17 +315,9 @@ class _TeeStream:
         self._secondary = secondary
         self._lock = threading.Lock()
 
-    def _write_primary(self, data: str) -> int:
-        try:
-            return int(self._primary.write(data))
-        except UnicodeEncodeError:
-            encoding = getattr(self._primary, "encoding", None) or "utf-8"
-            safe_data = data.encode(encoding, errors="replace").decode(encoding)
-            return int(self._primary.write(safe_data))
-
     def write(self, data: str) -> int:
         with self._lock:
-            written = self._write_primary(data)
+            written = self._primary.write(data)
             self._secondary.write(data)
             self._secondary.flush()
             return written
@@ -402,7 +405,7 @@ def _resolve_position_address_from_env() -> tuple[Optional[str], str]:
         "POLY_FUNDER",
     )
     for env_name in env_candidates:
-        cand = get_account_value(env_name)
+        cand = os.getenv(env_name)
         if cand and str(cand).strip():
             return str(cand).strip(), f"env:{env_name}"
     return None, "缺少地址，无法从 data-api /positions 查询持仓。"
@@ -690,6 +693,16 @@ def _coerce_float(value: Any) -> Optional[float]:
     except Exception:
         return None
     return None
+
+
+def _normalize_ws_event_timestamp(value: Any, *, now: Optional[float] = None) -> float:
+    current = time.time() if now is None else float(now)
+    ts = _coerce_float(value)
+    if ts is None or ts <= 0.0:
+        return current
+    if ts > current + 86400.0:
+        return current
+    return float(ts)
 
 
 def _extract_top_price_from_levels(levels: Any, side: str) -> Optional[float]:
@@ -2409,6 +2422,33 @@ class AutoRunManager:
             normalized["stoploss_first_cut_drawdown"] = float(stoploss_first_cut_drawdown)
         return normalized
 
+    @staticmethod
+    def _is_likely_real_token_id(token_id: Any) -> bool:
+        token = str(token_id or "").strip()
+        return len(token) >= 20 and token.isdigit()
+
+    @classmethod
+    def _filter_cycle_state_rows(
+        cls, rows: Dict[str, Any]
+    ) -> tuple[Dict[str, Dict[str, Any]], int]:
+        has_real_token = any(cls._is_likely_real_token_id(token_id) for token_id in rows.keys())
+        normalized: Dict[str, Dict[str, Any]] = {}
+        dropped = 0
+        for token_id, raw_record in rows.items():
+            token = str(token_id).strip()
+            if not token:
+                dropped += 1
+                continue
+            if has_real_token and not cls._is_likely_real_token_id(token):
+                dropped += 1
+                continue
+            record = cls._normalize_cycle_state_record(raw_record)
+            if record is None:
+                dropped += 1
+                continue
+            normalized[token] = record
+        return normalized, dropped
+
     def _load_token_cycle_states(self) -> None:
         with self._file_io_lock:
             if not self._token_cycle_state_path.exists():
@@ -2425,16 +2465,10 @@ class AutoRunManager:
             if not isinstance(token_states, dict):
                 self._token_cycle_states = {}
                 return
-            normalized: Dict[str, Dict[str, Any]] = {}
-            for token_id, raw_record in token_states.items():
-                token = str(token_id).strip()
-                if not token:
-                    continue
-                record = self._normalize_cycle_state_record(raw_record)
-                if record is None:
-                    continue
-                normalized[token] = record
+            normalized, dropped = self._filter_cycle_state_rows(token_states)
             self._token_cycle_states = normalized
+        if dropped:
+            print(f"[CYCLE_GATE][CLEANUP] 已忽略 {dropped} 条占位/脏 token 状态")
         if self._token_cycle_states:
             print(f"[CYCLE_GATE] 已加载 {len(self._token_cycle_states)} 条 token 周期状态")
 
@@ -2447,10 +2481,7 @@ class AutoRunManager:
                         payload = json.load(f)
                     raw_token_states = payload.get("token_states") if isinstance(payload, dict) else {}
                     if isinstance(raw_token_states, dict):
-                        for token_id, raw_record in raw_token_states.items():
-                            normalized = self._normalize_cycle_state_record(raw_record)
-                            if normalized is not None:
-                                disk_states[str(token_id)] = normalized
+                        disk_states, _ = self._filter_cycle_state_rows(raw_token_states)
                 except (json.JSONDecodeError, OSError):
                     disk_states = {}
 
@@ -2503,6 +2534,7 @@ class AutoRunManager:
                             merged_state.pop(key, None)
                 merged_states[token_id] = self._normalize_cycle_state_record(merged_state) or merged_state
 
+            merged_states, dropped = self._filter_cycle_state_rows(merged_states)
             self._token_cycle_states = merged_states
             payload = {
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -2512,6 +2544,9 @@ class AutoRunManager:
                 _atomic_json_write(self._token_cycle_state_path, payload)
             except OSError as exc:
                 print(f"[CYCLE_GATE][WARN] 写入状态失败: {exc}")
+            else:
+                if dropped:
+                    print(f"[CYCLE_GATE][CLEANUP] 已清理 {dropped} 条占位/脏 token 状态")
 
     @staticmethod
     def _today_utc_date(now: Optional[float] = None) -> str:
@@ -2702,7 +2737,27 @@ class AutoRunManager:
         # Legacy informational field retained for observability; pause gating now uses
         # daily_stoploss_full_clear_count plus reentry_paused_for_day.
         self._sync_stoploss_pause_status_fields(merged)
+        self._sanitize_stoploss_runtime_release_state(merged)
         return merged
+
+    @staticmethod
+    def _sanitize_stoploss_runtime_release_state(state: Dict[str, Any]) -> None:
+        state_name = str(state.get("state") or "").strip().upper()
+        if state_name != "NORMAL_MAKER":
+            return
+        if str(state.get("market_status_last") or "").strip() == "source_detached_guard_hold":
+            state["market_status_last"] = "source_detached"
+        last_error = str(state.get("last_error") or "").strip()
+        if last_error == "source_detached guard hold (within grace)":
+            state["last_error"] = ""
+        for key in (
+            "pending_stoploss_before_size",
+            "pending_stoploss_after_size",
+            "pending_stoploss_exit_price",
+            "pending_stoploss_exec_source",
+            "pending_stoploss_drawdown",
+        ):
+            state.pop(key, None)
 
     def _load_stoploss_reentry_states(self) -> None:
         with self._file_io_lock:
@@ -3224,7 +3279,110 @@ class AutoRunManager:
             return None
         return max(candidates)
 
-    def _advance_token_cycle_state_on_cleanup(self, token_id: str, run_cfg: Dict[str, Any]) -> None:
+    def _resolve_market_min_order_size_hint(
+        self,
+        token_id: str,
+        *,
+        row: Optional[Dict[str, Any]] = None,
+        run_cfg: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        for payload in (
+            row,
+            self.topic_details.get(token_id),
+            run_cfg,
+        ):
+            min_order_size = extract_market_min_order_size(
+                payload,
+                default=None,
+            )
+            if min_order_size is not None and min_order_size > 0:
+                return float(min_order_size)
+        return float(POSITION_TRUTH_FALLBACK_MIN_ORDER_SIZE)
+
+    def _classify_position_truth(
+        self,
+        token_id: str,
+        position_size: Any,
+        *,
+        row: Optional[Dict[str, Any]] = None,
+        run_cfg: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        market_min_order_size = self._resolve_market_min_order_size_hint(
+            token_id,
+            row=row,
+            run_cfg=run_cfg,
+        )
+        return classify_position_truth(
+            position_size,
+            market_min_order_size=market_min_order_size,
+            fallback_actionable_min_order_size=market_min_order_size,
+        )
+
+    def _find_position_row(
+        self,
+        rows: List[Dict[str, Any]],
+        token_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        for row in rows:
+            if _extract_position_token_id(row) == token_id:
+                return row
+        return None
+
+    def _get_position_truth_from_snapshot(
+        self,
+        token_id: str,
+        *,
+        force_refresh: bool = False,
+    ) -> tuple[str, float, Optional[Dict[str, Any]], str]:
+        rows, snapshot, info, _source = self._refresh_unified_position_snapshot(
+            force_refresh=force_refresh
+        )
+        if info != "ok":
+            normalized_size = float(snapshot.get(token_id, 0.0) or 0.0)
+            truth = self._classify_position_truth(token_id, normalized_size)
+            return truth, normalized_size, None, info
+        row = self._find_position_row(rows, token_id)
+        normalized_size = float(snapshot.get(token_id, 0.0) or 0.0)
+        truth = self._classify_position_truth(
+            token_id,
+            normalized_size,
+            row=row,
+        )
+        return truth, normalized_size, row, info
+
+    def _is_position_dust(
+        self,
+        token_id: str,
+        size: Any,
+        *,
+        row: Optional[Dict[str, Any]] = None,
+        run_cfg: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return self._classify_position_truth(
+            token_id,
+            size,
+            row=row,
+            run_cfg=run_cfg,
+        ) == POSITION_TRUTH_DUST
+
+    def _has_actionable_position(
+        self,
+        token_id: str,
+        size: Any,
+        *,
+        row: Optional[Dict[str, Any]] = None,
+        run_cfg: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return self._classify_position_truth(
+            token_id,
+            size,
+            row=row,
+            run_cfg=run_cfg,
+        ) == POSITION_TRUTH_ACTIONABLE
+
+    def _advance_token_cycle_state_on_round_close(
+        self, token_id: str, run_cfg: Dict[str, Any]
+    ) -> None:
         if not token_id:
             return
         now = time.time()
@@ -3281,6 +3439,28 @@ class AutoRunManager:
                 f"next_buy_after={next_text}"
             )
 
+    def _advance_token_cycle_state_on_cleanup(
+        self, token_id: str, run_cfg: Dict[str, Any]
+    ) -> None:
+        # Backward-compatible shim for older tests/callers.
+        self._advance_token_cycle_state_on_round_close(token_id, run_cfg)
+
+    def _confirm_round_close_from_position_truth(
+        self,
+        token_id: str,
+        *,
+        force_refresh: bool = True,
+    ) -> tuple[bool, str, float]:
+        truth, position_size, _row, info = self._get_position_truth_from_snapshot(
+            token_id,
+            force_refresh=force_refresh,
+        )
+        if info != "ok":
+            return False, f"position_snapshot_unavailable:{info}", position_size
+        if not is_position_truth_terminal(truth):
+            return False, f"position_truth={truth}", position_size
+        return True, truth, position_size
+
     def _mark_token_cycle_closed_runtime(
         self,
         token_id: str,
@@ -3300,6 +3480,8 @@ class AutoRunManager:
         ):
             detail.pop(stale_key, None)
         detail["queue_role"] = "cycle_closed"
+        self._refill_retry_counts.pop(token_id, None)
+        self._refilled_tokens.discard(token_id)
         self._remove_pending_topic(token_id)
         task_ref = task or self.tasks.get(token_id)
         if task_ref is not None:
@@ -3307,14 +3489,6 @@ class AutoRunManager:
             task_ref.no_restart = True
             if not task_ref.end_reason:
                 task_ref.end_reason = "cycle closed"
-
-    @staticmethod
-    def _is_position_dust(size: Any) -> bool:
-        try:
-            normalized = float(size or 0.0)
-        except (TypeError, ValueError):
-            normalized = 0.0
-        return normalized <= POSITION_CLEANUP_DUST_THRESHOLD
 
     def _apply_token_cycle_buy_gate_and_drop_override(
         self, token_id: str, run_cfg: Dict[str, Any]
@@ -3862,7 +4036,9 @@ class AutoRunManager:
         rows, snapshot, info, _source = self._refresh_unified_position_snapshot(force_refresh=True)
         if info != "ok":
             return False
-        if not self._is_position_dust(snapshot.get(task.topic_id, 0.0)):
+        if not is_position_truth_terminal(
+            self._classify_position_truth(task.topic_id, snapshot.get(task.topic_id, 0.0))
+        ):
             return False
         self._append_exit_token_record(
             task.topic_id,
@@ -3909,8 +4085,37 @@ class AutoRunManager:
         if info != "ok":
             return False
         position_size = float(snapshot.get(task.topic_id, 0.0) or 0.0)
-        if self._is_position_dust(position_size):
+        if is_position_truth_terminal(
+            self._classify_position_truth(task.topic_id, position_size)
+        ):
             return False
+        gap_backoff = self._get_active_gap_skip_backoff(task.topic_id)
+        if gap_backoff:
+            hold_until_ts = float(gap_backoff.get("hold_until_ts", 0.0) or 0.0)
+            remaining_sec = max(
+                0.0,
+                float(gap_backoff.get("remaining_seconds", 0.0) or 0.0),
+            )
+            detail["gap_hold_reason"] = "POSITION_SYNC_SKIP_GAP"
+            detail["gap_hold_until_ts"] = hold_until_ts
+            detail["gap_hold_streak"] = int(gap_backoff.get("streak", 0.0) or 0.0)
+            detail["gap_hold_latest_exit_ts"] = float(
+                gap_backoff.get("latest_exit_ts", 0.0) or 0.0
+            )
+            task.end_reason = "position sync gap hold"
+            task.heartbeat(
+                "position reconcile exited with remaining position; "
+                f"gap hold active for {remaining_sec:.1f}s"
+            )
+            print(
+                "[AUTO][GAP_HOLD] startup_reconcile_position clean exit respects gap backoff: "
+                f"token={task.topic_id} size={position_size:.4f} hold={remaining_sec:.1f}s"
+            )
+            return True
+        detail.pop("gap_hold_reason", None)
+        detail.pop("gap_hold_until_ts", None)
+        detail.pop("gap_hold_streak", None)
+        detail.pop("gap_hold_latest_exit_ts", None)
         detail["queue_role"] = "startup_reconcile_position"
         detail["schedule_lane"] = "base"
         if (
@@ -4083,7 +4288,6 @@ class AutoRunManager:
 
         max_actions = max(1, int(getattr(self.config, "stoploss_max_tokens_per_cycle", 1)))
         confirm_rounds = max(1, int(getattr(self.config, "stoploss_confirm_rounds", 2)))
-        dust = max(float(POSITION_CLEANUP_DUST_THRESHOLD), 1e-6)
         today = self._today_utc_date(now)
         window_cd = max(0.0, float(self.config.stoploss_reentry_window_cooldown_minutes)) * 60.0
         next_stoploss_cd = max(0.0, float(self.config.stoploss_next_stoploss_cooldown_minutes)) * 60.0
@@ -4111,7 +4315,7 @@ class AutoRunManager:
             if not token_id:
                 continue
             pos_size = float(_extract_position_size(row) or 0.0)
-            if pos_size <= dust:
+            if not self._has_actionable_position(token_id, pos_size, row=row):
                 continue
             positions[token_id] = row
             managed_scope.add(token_id)
@@ -4279,7 +4483,7 @@ class AutoRunManager:
                 continue
 
             pos_size = float(_extract_position_size(row) or 0.0)
-            if pos_size <= dust:
+            if not self._has_actionable_position(token_id, pos_size, row=row):
                 state["stoploss_confirm_hits"] = 0
                 state["position_opened_ts"] = 0.0
                 state_dirty = True
@@ -4408,7 +4612,7 @@ class AutoRunManager:
             if filled_size <= 0.0 and before_size > after_size:
                 filled_size = max(0.0, before_size - after_size)
             fill_confirmed_postcheck = False
-            if filled_size <= dust:
+            if not self._has_actionable_position(token_id, filled_size, row=row):
                 confirmed_after, confirmed_filled, confirm_info = (
                     self._confirm_stoploss_ioc_fill_via_data_api(
                         token_id,
@@ -4416,7 +4620,7 @@ class AutoRunManager:
                         observed_after_size=after_size,
                     )
                 )
-                if confirmed_filled > dust:
+                if self._has_actionable_position(token_id, confirmed_filled, row=row):
                     after_size = confirmed_after
                     filled_size = confirmed_filled
                     fill_confirmed_postcheck = True
@@ -4508,7 +4712,7 @@ class AutoRunManager:
             state["old_last_buy_price"] = float(avg_price)
             state["old_maker_floor_price"] = _coerce_float((self.topic_details.get(token_id) or {}).get("floor_price"))
             state["old_maker_profit_pct"] = float(self._resolve_profit_pct_for_token(token_id))
-            if after_size > dust:
+            if self._has_actionable_position(token_id, after_size, row=row):
                 self._enter_stoploss_clear_pending_confirm(
                     token_id,
                     state,
@@ -4602,11 +4806,7 @@ class AutoRunManager:
             if state_name == "STOPLOSS_CLEAR_PENDING_ESCALATED":
                 continue
             if self._stoploss_is_market_closed(token_id):
-                if state_name in {
-                    "STOPLOSS_EXITED_WAITING_WINDOW",
-                    "STOPLOSS_EXITED_WAITING_PROBE",
-                    "STOPLOSS_EXITED_WAITING_REBOUND",
-                }:
+                if state_name in waiting_reentry_states:
                     self._abandon_stoploss_reentry(
                         token_id,
                         state,
@@ -4619,13 +4819,10 @@ class AutoRunManager:
                 state_dirty = True
                 continue
 
-            if state_name in {
-                "STOPLOSS_EXITED_WAITING_WINDOW",
-                "STOPLOSS_EXITED_WAITING_PROBE",
-                "STOPLOSS_EXITED_WAITING_REBOUND",
-            }:
+            if state_name in waiting_reentry_states:
                 has_sell_signal = token_id in copytrade_sell_signal_scope
                 not_in_follow_list = token_id not in copytrade_token_scope
+                stop_exit_ts = float(state.get("stop_exit_ts") or 0.0)
                 if has_sell_signal or not_in_follow_list:
                     reason = "target_sell_signal_while_waiting_reentry" if has_sell_signal else "target_not_following_while_waiting_reentry"
                     self._abandon_stoploss_reentry(
@@ -4645,35 +4842,9 @@ class AutoRunManager:
                             note="skip_reentry_after_target_sell",
                         )
                     continue
-                stop_exit_ts = float(state.get("stop_exit_ts") or 0.0)
-                fresh_target_buy_ts = float(copytrade_token_last_seen_ts.get(token_id) or 0.0)
-                if (
-                    stop_exit_ts > 0.0
-                    and fresh_target_buy_ts > 0.0
-                    and fresh_target_buy_ts > stop_exit_ts + 1e-6
-                ):
-                    state["state"] = "NORMAL_MAKER"
-                    state["probe_confirm_hits"] = 0
-                    state["rebound_confirm_hits"] = 0
-                    state["pending_cleanup_since_ts"] = 0.0
-                    state["last_error"] = ""
-                    state["market_status_last"] = "target_buy_seen_after_stoploss_exit"
-                    self._append_exit_token_record(
-                        token_id,
-                        "STOPLOSS_WAITING_RELEASED_BY_TARGET_BUY",
-                        exit_data={
-                            "source": "stoploss_v4",
-                            "stop_exit_ts": stop_exit_ts,
-                            "target_buy_ts": fresh_target_buy_ts,
-                            "previous_state": state_name,
-                        },
-                        refillable=False,
-                    )
-                    print(
-                        f"[STATE_SYNC] token={token_id[:20]}... release waiting reentry after target buy refresh"
-                    )
-                    state_dirty = True
-                    continue
+                # Target BUY must not bypass stoploss reentry gating. Once a token
+                # enters stoploss waiting, only explicit cancel paths or the stoploss
+                # reentry state machine may bring it back.
                 if stop_exit_ts > 0.0 and (now - stop_exit_ts) >= reentry_timeout_sec:
                     self._abandon_stoploss_reentry(
                         token_id,
@@ -4805,7 +4976,7 @@ class AutoRunManager:
                 continue
 
             target_size = max(0.0, float(state.get("last_stoploss_size") or 0.0))
-            if target_size <= dust:
+            if not self._has_actionable_position(token_id, target_size):
                 state["rebound_confirm_hits"] = 0
                 state["last_error"] = "invalid reentry target size"
                 print(f"[RISK_GUARD] token={token_id[:20]}... invalid reentry target size={target_size:.6f}")
@@ -4820,7 +4991,7 @@ class AutoRunManager:
                 reason="stoploss_v4_reentry",
             )
             after_size = max(0.0, float(_coerce_float(reenter.get("after_size")) or 0.0))
-            if (not bool(reenter.get("ok"))) or after_size <= dust:
+            if (not bool(reenter.get("ok"))) or (not self._has_actionable_position(token_id, after_size)):
                 state["rebound_confirm_hits"] = 0
                 state["last_error"] = str(reenter.get("error") or "reentry failed")
                 print(f"[REENTRY_EXEC] token={token_id[:20]}... failed error={state['last_error']}")
@@ -5878,12 +6049,9 @@ class AutoRunManager:
             print(f"[WS][AGGREGATOR] ✓ WS连接正常 (已订阅: {stats.get('subscribed_tokens', 0)} 个token)")
 
     def _load_ws_auth(self) -> Optional[Dict[str, str]]:
-        api_key = get_account_value("POLY_API_KEY")
-        api_secret = get_account_value("POLY_API_SECRET")
-        api_passphrase = (
-            get_account_value("POLY_API_PASSPHRASE")
-            or get_account_value("POLY_API_PASS_PHRASE")
-        )
+        api_key = os.getenv("POLY_API_KEY")
+        api_secret = os.getenv("POLY_API_SECRET")
+        api_passphrase = os.getenv("POLY_API_PASSPHRASE") or os.getenv("POLY_API_PASS_PHRASE")
         if api_key and api_secret and api_passphrase:
             return {
                 "apiKey": api_key,
@@ -6195,10 +6363,9 @@ class AutoRunManager:
                     print(f"[WS][STATS] 过滤事件类型: {self._ws_filtered_types}")
                 self._ws_last_stats_log = now
             return
-        ts = ev.get("timestamp") or ev.get("ts") or ev.get("time")
-        # 确保时间戳总是有效的
-        if ts is None:
-            ts = time.time()
+        ts = _normalize_ws_event_timestamp(
+            ev.get("timestamp") or ev.get("ts") or ev.get("time")
+        )
 
         status_keys = (
             "status",
@@ -6807,27 +6974,68 @@ class AutoRunManager:
         # 非 0 视作异常，自动补排一次 exit-only cleanup，避免漏清仓。
         if task.end_reason in ("sell signal", "sell signal cleanup"):
             if rc == 0:
-                self._append_exit_token_record(
+                round_closed, close_reason, position_size = self._confirm_round_close_from_position_truth(
                     task.topic_id,
-                    "EXIT_CLEANUP_SUCCESS",
-                    exit_data={
-                        "source": "exit_only_process",
-                        "rc": rc,
-                    },
-                    refillable=False,
+                    force_refresh=True,
                 )
-                self._exit_cleanup_suppressed_until.pop(task.topic_id, None)
-                self._completed_exit_cleanup_tokens.add(task.topic_id)
-                self._exit_cleanup_retry_counts.pop(task.topic_id, None)
-                self._update_sell_signal_event(
-                    task.topic_id,
-                    status="done",
-                    attempts=0,
-                    note="exit_cleanup_success",
-                )
-                self._set_follow_cooldown_token(task.topic_id, cooldown_seconds=24.0 * 3600.0)
-                self._clear_manual_intervention_token(task.topic_id)
-            else:
+                if (
+                    not round_closed
+                    and close_reason.startswith("position_snapshot_unavailable:")
+                    and not self._position_address
+                ):
+                    round_closed = True
+                    close_reason = "position_snapshot_unavailable_missing_address_assumed_closed"
+                    position_size = 0.0
+                if round_closed:
+                    self._append_exit_token_record(
+                        task.topic_id,
+                        "EXIT_CLEANUP_SUCCESS",
+                        exit_data={
+                            "source": "exit_only_process",
+                            "rc": rc,
+                            "position_truth": close_reason,
+                            "position_size": position_size,
+                        },
+                        refillable=False,
+                    )
+                    self._exit_cleanup_suppressed_until.pop(task.topic_id, None)
+                    self._completed_exit_cleanup_tokens.add(task.topic_id)
+                    self._exit_cleanup_retry_counts.pop(task.topic_id, None)
+                    self._update_sell_signal_event(
+                        task.topic_id,
+                        status="done",
+                        attempts=0,
+                        note="exit_cleanup_success",
+                    )
+                    self._set_follow_cooldown_token(task.topic_id, cooldown_seconds=24.0 * 3600.0)
+                    self._clear_manual_intervention_token(task.topic_id)
+                    task_run_cfg = self._get_task_run_config(task)
+                    self._advance_token_cycle_state_on_cleanup(task.topic_id, task_run_cfg)
+                    # 仅在清仓成功后才释放 token 周期锁并清理 copytrade 文件记录：
+                    # - handled_topics: 允许后续新一轮买入
+                    # - tokens/sell_signals: 完成本轮生命周期闭环
+                    self._remove_from_handled_topics(task.topic_id)
+                    self._remove_token_from_copytrade_files(task.topic_id)
+                    self._remove_exit_token_records(task.topic_id)
+                    self._mark_token_cycle_closed_runtime(task.topic_id, task=task)
+                else:
+                    self._append_exit_token_record(
+                        task.topic_id,
+                        "EXIT_CLEANUP_INCOMPLETE_POSITION_REMAINS",
+                        exit_data={
+                            "source": "exit_only_process",
+                            "rc": rc,
+                            "position_size": position_size,
+                            "close_reason": close_reason,
+                        },
+                        refillable=False,
+                    )
+                    rc = 75
+                    print(
+                        "[COPYTRADE][WARN] sell 清仓进程返回 rc=0 但仓位未真正闭合，按未完成处理: "
+                        f"token={task.topic_id} reason={close_reason} position_size={position_size:.6f}"
+                    )
+            if rc != 0:
                 self._append_exit_token_record(
                     task.topic_id,
                     "EXIT_CLEANUP_FAILED",
@@ -6872,16 +7080,6 @@ class AutoRunManager:
                         f"token_id={task.topic_id} rc={rc} "
                         f"retry={retry_count}/{EXIT_CLEANUP_MAX_RETRIES}"
                     )
-            if rc == 0:
-                task_run_cfg = self._get_task_run_config(task)
-                self._advance_token_cycle_state_on_cleanup(task.topic_id, task_run_cfg)
-                # 仅在清仓成功后才释放 token 周期锁并清理 copytrade 文件记录：
-                # - handled_topics: 允许后续新一轮买入
-                # - tokens/sell_signals: 完成本轮生命周期闭环
-                self._remove_from_handled_topics(task.topic_id)
-                self._remove_token_from_copytrade_files(task.topic_id)
-                self._remove_exit_token_records(task.topic_id)
-                self._mark_token_cycle_closed_runtime(task.topic_id, task=task)
 
         if self._finalize_position_reconcile_exit_if_flat(task, rc=rc):
             return
@@ -7720,6 +7918,14 @@ class AutoRunManager:
         merged = {**base_template, **base, **topic_overrides}
 
         topic_info = self.topic_details.get(topic_id, {})
+        queue_role = str(topic_info.get("queue_role") or "").strip().lower()
+        if queue_role in {
+            "restored_token",
+            "startup_reconcile_position",
+            "refill_with_position",
+        } and not isinstance(topic_info.get("resume_state"), dict):
+            self._ensure_resume_state_from_live_position(topic_id)
+            topic_info = self.topic_details.get(topic_id, {})
         slug = topic_info.get("slug")
         if slug:
             merged["market_url"] = f"https://polymarket.com/market/{slug}"
@@ -7775,6 +7981,8 @@ class AutoRunManager:
         if topic_info.get("force_sell_only_reason"):
             merged["force_sell_only_reason"] = str(topic_info.get("force_sell_only_reason"))
         if topic_info.get("startup_skip_if_open_sell"):
+            merged["startup_skip_if_open_sell"] = True
+        elif isinstance(resume_state, dict) and bool(resume_state.get("skip_buy")):
             merged["startup_skip_if_open_sell"] = True
         if topic_info.get("sell_exit_reason"):
             merged["exit_cleanup_reason"] = str(topic_info.get("sell_exit_reason"))
@@ -8279,18 +8487,10 @@ class AutoRunManager:
         self._sell_exit_deadlines.pop(topic_id, None)
         self._seen_self_sell_tokens.discard(topic_id)
         self._clear_active_unmanaged_rearm_block(topic_id)
-        # 检查是否是回填启动。
-        # 注意：无持仓回填时 resume_state 可能为 None，不能仅靠 resume_state 判断。
+        # refill retry count 属于“同一笔未闭合仓位恢复链”的状态。
+        # 这里不再按启动来源猜测是否清零，避免 startup_reconcile_position
+        # 等路径把同一生命周期误判成新一轮并重置 1/6..6/6 计数。
         detail = self.topic_details.get(topic_id) or {}
-        is_refill_start = bool(
-            detail.get("refill_exit_reason")
-            or detail.get("refill_retry_count", 0)
-            or detail.get("resume_state") is not None
-        )
-        # 只有非回填启动（新交易周期）时才重置回填重试计数；
-        # 回填启动时保留计数，确保 PRICE_NONE_STREAK/NO_DATA_TIMEOUT 的重试限制生效。
-        if not is_refill_start:
-            self._refill_retry_counts.pop(topic_id, None)
         cycle_mode = "started_not_bought"
         resume_state = detail.get("resume_state")
         if bool(config_data.get("exit_only")):
@@ -8327,7 +8527,11 @@ class AutoRunManager:
         detail = self.topic_details.setdefault(token_id, {})
         queue_role = str(detail.get("queue_role") or "").strip().lower()
         has_existing_resume = isinstance(detail.get("resume_state"), dict)
-        should_probe = queue_role == "restored_token" or has_existing_resume
+        should_probe = queue_role in {
+            "restored_token",
+            "startup_reconcile_position",
+            "refill_with_position",
+        } or has_existing_resume
         if not should_probe:
             return
 
@@ -8341,15 +8545,10 @@ class AutoRunManager:
             )
             return
 
+        row = self._find_position_row(rows, token_id)
         size = float(snapshot.get(token_id, 0.0) or 0.0)
-        if size <= POSITION_CLEANUP_DUST_THRESHOLD:
+        if not self._has_actionable_position(token_id, size, row=row):
             return
-
-        row: Optional[Dict[str, Any]] = None
-        for item in rows:
-            if _extract_position_token_id(item) == token_id:
-                row = item
-                break
 
         entry_price = _extract_position_avg_price(row or {})
         if entry_price is None or entry_price <= 0:
@@ -8372,6 +8571,7 @@ class AutoRunManager:
             "skip_buy": True,
         }
         detail["resume_state"] = resume_state
+        detail["startup_skip_if_open_sell"] = True
         print(
             "[RESUME] 检测到已有持仓，强制跳过买入: "
             f"token={token_id[:16]}... size={size:.4f}"
@@ -8399,7 +8599,10 @@ class AutoRunManager:
             )
             return "position_snapshot_unavailable"
 
-        has_live_position = not self._is_position_dust(snapshot.get(token_id, 0.0))
+        has_live_position = self._has_actionable_position(
+            token_id,
+            snapshot.get(token_id, 0.0),
+        )
         if has_live_position:
             self._ensure_resume_state_from_live_position(token_id)
             return "position_confirmed"
@@ -8662,7 +8865,7 @@ class AutoRunManager:
                 owner_retained.add(token_id)
                 continue
             pos_size = float(pos_snapshot.get(token_id, 0.0) or 0.0)
-            has_position = not self._is_position_dust(pos_size)
+            has_position = self._has_actionable_position(token_id, pos_size)
             has_sell_signal = token_id in tokens_with_sell_signal
             if has_sell_signal and has_position:
                 to_liquidate.add(token_id)
@@ -8833,7 +9036,7 @@ class AutoRunManager:
             if not token_id:
                 continue
             size = float(_extract_position_size(row) or 0.0)
-            if size <= POSITION_CLEANUP_DUST_THRESHOLD:
+            if not self._has_actionable_position(token_id, size, row=row):
                 continue
             stats["candidates"] += 1
             if token_id in copytrade_topics:
@@ -8920,7 +9123,7 @@ class AutoRunManager:
             has_position = False
             if pos_info == "ok":
                 pos_size = float(pos_snapshot.get(token_id, 0.0) or 0.0)
-                has_position = not self._is_position_dust(pos_size)
+                has_position = self._has_actionable_position(token_id, pos_size)
 
             if has_position or pos_info != "ok":
                 self._remove_pending_topic(token_id)
@@ -9383,6 +9586,52 @@ class AutoRunManager:
         if len(self.latest_topics) < original_len:
             print(f"[CLEANUP] 已从 latest_topics 内存中移除 token={token_id[:20]}...")
 
+    def _is_terminal_exit_reason(self, reason: Any) -> bool:
+        return str(reason or "").strip().upper() in {
+            "MARKET_CLOSED",
+            "MARKET_RESOLVED",
+            "MARKET_ARCHIVED",
+            "MARKET_NOT_FOUND",
+            "MARKET_CLOSED_ON_REFILL",
+            "MARKET_TERMINAL_DETECTED",
+        }
+
+    def _orphan_state_blocks_refill(self, state: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(state, dict):
+            return False
+        return self._is_terminal_exit_reason(
+            state.get("reason") or state.get("trigger_reason") or ""
+        )
+
+    def _invalidate_refill_records_for_token(
+        self,
+        token_id: str,
+        *,
+        block_reason: str,
+        block_source: str,
+    ) -> int:
+        if not token_id:
+            return 0
+        changed = 0
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with self._file_io_lock:
+            records = self._load_exit_tokens()
+            if not isinstance(records, list) or not records:
+                return 0
+            for record in records:
+                if str(record.get("token_id") or "").strip() != str(token_id):
+                    continue
+                if not bool(record.get("refillable", True)):
+                    continue
+                record["refillable"] = False
+                record["refill_block_reason"] = str(block_reason)
+                record["refill_block_source"] = str(block_source)
+                record["refill_blocked_at"] = now_iso
+                changed += 1
+            if changed > 0:
+                _atomic_json_write(self._exit_tokens_path, records)
+        return changed
+
     # ========== Slot Refill (回填) 逻辑 ==========
     def _load_exit_tokens(self) -> List[Dict[str, Any]]:
         """
@@ -9502,6 +9751,7 @@ class AutoRunManager:
             "MARKET_ARCHIVED",
             "MARKET_NOT_FOUND",
             "MARKET_CLOSED_ON_REFILL",
+            "MARKET_TERMINAL_DETECTED",
             "USER_STOPPED",
             "DEADLINE_REACHED",
         }
@@ -9539,6 +9789,7 @@ class AutoRunManager:
         gap_backoff_by_token = self._build_gap_skip_backoff_seconds_by_token(
             exit_records
         )
+        orphan_states = self._load_latest_orphan_states()
 
         for record in sorted_records:
             token_id = record.get("token_id")
@@ -9551,6 +9802,12 @@ class AutoRunManager:
                 skip_stats["duplicate_token"] = skip_stats.get("duplicate_token", 0) + 1
                 continue
             seen_tokens.add(token_id)
+
+            if self._orphan_state_blocks_refill(orphan_states.get(str(token_id))):
+                skip_stats["terminal_orphan_block"] = (
+                    skip_stats.get("terminal_orphan_block", 0) + 1
+                )
+                continue
 
             exit_reason = record.get("exit_reason", "")
             exit_ts = record.get("exit_ts", 0)
@@ -9822,6 +10079,37 @@ class AutoRunManager:
             }
         return backoff
 
+    def _get_active_gap_skip_backoff(
+        self,
+        token_id: str,
+        *,
+        exit_records: Optional[List[Dict[str, Any]]] = None,
+        now: Optional[float] = None,
+    ) -> Optional[Dict[str, float]]:
+        token = str(token_id or "").strip()
+        if not token:
+            return None
+        records = exit_records if exit_records is not None else self._load_exit_tokens()
+        backoff = self._build_gap_skip_backoff_seconds_by_token(records).get(token)
+        if not backoff:
+            return None
+        latest_exit_ts = float(backoff.get("latest_exit_ts", 0.0) or 0.0)
+        backoff_seconds = float(backoff.get("seconds", 0.0) or 0.0)
+        if latest_exit_ts <= 0.0 or backoff_seconds <= 0.0:
+            return None
+        current_ts = time.time() if now is None else float(now)
+        hold_until_ts = latest_exit_ts + backoff_seconds
+        remaining_seconds = max(0.0, hold_until_ts - current_ts)
+        if remaining_seconds <= 0.0:
+            return None
+        return {
+            "seconds": backoff_seconds,
+            "streak": float(backoff.get("streak", 0.0) or 0.0),
+            "latest_exit_ts": latest_exit_ts,
+            "hold_until_ts": hold_until_ts,
+            "remaining_seconds": remaining_seconds,
+        }
+
     def _schedule_refill(self) -> None:
         """
         执行回填调度：从退出记录中选取可回填的token重新加入pending队列。
@@ -10083,8 +10371,6 @@ class AutoRunManager:
         state = self._stoploss_reentry_states.get(token_id) or {}
         if not isinstance(state, dict) or not state:
             return False
-        if bool(state.get("source_detached", False)):
-            return True
         state_name = str(state.get("state") or "").strip().upper()
         return state_name in {
             "STOPLOSS_EXITED_WAITING_WINDOW",
@@ -10223,6 +10509,57 @@ class AutoRunManager:
         suppress_sec = max(
             300.0, float(self.config.active_unmanaged_rearm_budget_suppress_sec)
         )
+        guard_sec = max(
+            900.0,
+            float(self.config.refill_cooldown_minutes_with_position) * 60.0,
+        )
+        unresolved_active = set(active_copytrade_topics)
+        hydrated_blocks = 0
+        for record in reversed(self._load_exit_tokens()):
+            token_id = str(record.get("token_id") or "").strip()
+            if not token_id or token_id not in unresolved_active:
+                continue
+            unresolved_active.discard(token_id)
+            reason = str(record.get("exit_reason") or "").strip().upper()
+            if reason != "SELL_ABANDONED":
+                if not unresolved_active:
+                    break
+                continue
+            exit_data = record.get("exit_data") or {}
+            inactive_timeout_hours = _coerce_float(
+                exit_data.get("inactive_timeout_hours") if isinstance(exit_data, dict) else None
+            )
+            # Only hydrate SELL_ABANDONED blocks from strategy-runtime records.
+            # Child runtime records include inactive_timeout_hours; synthetic/manual records usually do not.
+            if inactive_timeout_hours is None:
+                if not unresolved_active:
+                    break
+                continue
+            exit_ts = float(_coerce_float(record.get("exit_ts")) or 0.0)
+            if exit_ts <= 0.0:
+                if not unresolved_active:
+                    break
+                continue
+            blocked_until = exit_ts + guard_sec
+            if blocked_until > now:
+                current_until = float(
+                    self._active_unmanaged_rearm_blocked_until.get(token_id) or 0.0
+                )
+                if blocked_until > current_until:
+                    self._active_unmanaged_rearm_blocked_until[token_id] = blocked_until
+                    self._active_unmanaged_rearm_block_reasons[token_id] = "SELL_ABANDONED"
+                    hydrated_blocks += 1
+            if not unresolved_active:
+                break
+        if hydrated_blocks:
+            self._log_throttled(
+                "active_unmanaged_rearm_hydrated_sell_abandoned_blocks",
+                120.0,
+                (
+                    "[HANDLED][RUNTIME_REARM] hydrated SELL_ABANDONED blocks from exit records: "
+                    f"count={hydrated_blocks}"
+                ),
+            )
         candidates: List[str] = []
         for token_id in sorted(active_copytrade_topics):
             if token_id in blocked_tokens or token_id in sell_signals:
@@ -10318,7 +10655,10 @@ class AutoRunManager:
                 if stale_key in detail:
                     stale_keys_cleared.append(stale_key)
                     detail.pop(stale_key, None)
-            has_position = not self._is_position_dust(pos_snapshot.get(token_id, 0.0))
+            has_position = self._has_actionable_position(
+                token_id,
+                pos_snapshot.get(token_id, 0.0),
+            )
             detail["schedule_lane"] = "base"
             rearm_path = "startup_reconcile_position" if has_position else "startup_reconcile_buy"
             detail["queue_role"] = rearm_path
@@ -10915,6 +11255,32 @@ class AutoRunManager:
             f"token_id={token_id} source={source} reason={reason}"
         )
 
+    def _finalize_copytrade_sell_after_flat(
+        self,
+        token_id: str,
+        *,
+        task: Optional[TopicTask],
+        source: str,
+        reason: str,
+    ) -> None:
+        if not token_id:
+            return
+        self.tasks.pop(token_id, None)
+        self._mark_exit_signal_inactive(
+            token_id,
+            status="done",
+            source=source,
+            invalidate_reason="position_flat",
+        )
+        self._remove_token_from_copytrade_files(token_id)
+        self._mark_token_cycle_closed_runtime(token_id, task=task)
+        self._purge_token_runtime_state(token_id)
+        self._remove_from_handled_topics(token_id)
+        print(
+            "[COPYTRADE] SELL 信号在本地周期收口后完成终态冻结: "
+            f"token_id={token_id} source={source} reason={reason}"
+        )
+
     def _has_account_position(self, token_id: str, *, force_refresh: bool = False) -> bool:
         if not token_id:
             return False
@@ -10951,7 +11317,7 @@ class AutoRunManager:
             token_id,
         )
         normalized_pos_size = float(pos_size or 0.0)
-        has_position = not self._is_position_dust(normalized_pos_size)
+        has_position = self._has_actionable_position(token_id, normalized_pos_size)
         if info != "ok" and not has_position:
             print(f"[COPYTRADE][INFO] 持仓检查失败 token={token_id} info={info}")
         self._position_snapshot_cache[token_id] = {
@@ -11041,7 +11407,7 @@ class AutoRunManager:
         snapshot_info: str,
     ) -> tuple[bool, str]:
         pos_size = float(snapshot.get(token_id, 0.0) or 0.0)
-        if pos_size > POSITION_CLEANUP_DUST_THRESHOLD:
+        if self._has_actionable_position(token_id, pos_size):
             return True, "snapshot"
         if snapshot_info == "ok":
             has_position = self._has_account_position(token_id, force_refresh=True)
@@ -11178,6 +11544,19 @@ class AutoRunManager:
                 allow_started_not_bought_cleanup=bool(task or token_id in self.pending_topics),
             )
             if not cycle_allowed:
+                detail = self.topic_details.get(token_id) or {}
+                terminal_reason = str(detail.get("terminal_sell_reason") or "").strip().upper()
+                if cycle_reason == "cycle_closed" and terminal_reason == "COPYTRADE_SELL":
+                    has_position = self._has_account_position(token_id, force_refresh=True)
+                    if not has_position:
+                        self._finalize_copytrade_sell_after_flat(
+                            token_id,
+                            task=task,
+                            source="copytrade_sell_signal_full_recheck",
+                            reason="cycle_closed_after_copytrade_sell",
+                        )
+                        self._handled_sell_signals.add(token_id)
+                        continue
                 self._mark_token_cycle_invalidated(
                     token_id,
                     reason=f"sell_signal_without_active_local_cycle:{cycle_reason}",
@@ -11280,6 +11659,12 @@ class AutoRunManager:
         detail["sell_trigger_source"] = str(trigger_source)
         detail["sell_exit_reason"] = exit_reason
         detail["sell_trigger_ts"] = float(now)
+        if exit_reason == "COPYTRADE_SELL":
+            detail["terminal_sell_reason"] = exit_reason
+            detail["terminal_sell_requested_at"] = float(now)
+        else:
+            detail.pop("terminal_sell_reason", None)
+            detail.pop("terminal_sell_requested_at", None)
         if task and task.is_running():
             task.no_restart = True
             task.end_reason = "sell signal"
@@ -11391,6 +11776,36 @@ class AutoRunManager:
         delay = base * (2 ** max(0, int(attempts) - 1))
         return max(30.0, min(float(delay), max_backoff))
 
+    def _get_official_orphan_terminal_market_state(
+        self, token_id: str
+    ) -> Tuple[Optional[str], Optional[MarketState]]:
+        if not token_id or not self._market_state_checker:
+            return None, None
+        condition_id = self._get_condition_id_for_token(token_id)
+        if not condition_id:
+            return None, None
+        try:
+            market_state = self._market_state_checker.check_market_state(
+                condition_id,
+                token_id,
+                use_cache=False,
+            )
+        except Exception as exc:
+            print(
+                "[ORPHAN][WARN] official market check failed: "
+                f"token={token_id[:16]}... error={exc}"
+            )
+            return None, None
+        if not market_state.is_permanently_closed:
+            return None, market_state
+        reason_map = {
+            MarketStatus.CLOSED: "MARKET_CLOSED",
+            MarketStatus.RESOLVED: "MARKET_RESOLVED",
+            MarketStatus.ARCHIVED: "MARKET_ARCHIVED",
+            MarketStatus.NOT_FOUND: "MARKET_NOT_FOUND",
+        }
+        return reason_map.get(market_state.status, "MARKET_TERMINAL_DETECTED"), market_state
+
     def _run_orphan_recovery_probe(self, now: float) -> None:
         latest = self._load_latest_orphan_states()
         if not latest:
@@ -11436,15 +11851,73 @@ class AutoRunManager:
                 reason = "copytrade_not_active"
             elif token_id in sell_signals:
                 reason = "sell_signal_active"
-            elif pos_info != "ok":
-                reason = f"position_unavailable:{pos_info}"
             else:
-                pos_size = float(pos_snapshot.get(token_id, 0.0) or 0.0)
-                if pos_size <= POSITION_CLEANUP_DUST_THRESHOLD:
-                    reason = "no_position"
+                self._hydrate_topic_metadata_for_blacklist(token_id)
+                market_reason, market_state = self._get_official_orphan_terminal_market_state(
+                    token_id
+                )
+                if market_reason:
+                    condition_id = self._get_condition_id_for_token(token_id)
+                    if self._market_closed_cleaner and condition_id:
+                        try:
+                            copytrade_state_path = (
+                                self.config.copytrade_tokens_path.parent / "copytrade_state.json"
+                            )
+                            self._market_closed_cleaner.clean_closed_market(
+                                token_id=token_id,
+                                condition_id=condition_id,
+                                exit_reason=market_reason,
+                                copytrade_file=str(self.config.copytrade_tokens_path),
+                                copytrade_state_file=str(copytrade_state_path)
+                                if copytrade_state_path.exists()
+                                else None,
+                                exit_tokens_file=str(self._exit_tokens_path),
+                            )
+                        except Exception as exc:
+                            print(
+                                "[ORPHAN][WARN] terminal market cleanup failed: "
+                                f"token={token_id[:16]}... error={exc}"
+                            )
+                    self._append_orphan_token_record(
+                        {
+                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+                            "updated_ts": float(now),
+                            "token_id": token_id,
+                            "status": "manual_only",
+                            "probe_attempts": int(next_attempt),
+                            "next_probe_at": 0.0,
+                            "reason": market_reason,
+                            "trigger_source": "orphan_recovery_probe",
+                            "note": (
+                                f"official_market_status="
+                                f"{market_state.status.value if market_state else 'unknown'}"
+                            ),
+                        }
+                    )
+                    failed += 1
+                    continue
+                if pos_info != "ok":
+                    reason = f"positions_unavailable:{pos_info}"
+                else:
+                    pos_size = float(pos_snapshot.get(token_id, 0.0) or 0.0)
+                    if not self._has_actionable_position(token_id, pos_size):
+                        self._append_orphan_token_record(
+                            {
+                                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+                                "updated_ts": float(now),
+                                "token_id": token_id,
+                                "status": "manual_only",
+                                "probe_attempts": int(next_attempt),
+                                "next_probe_at": 0.0,
+                                "reason": "POSITIONS_NO_POSITION",
+                                "trigger_source": "orphan_recovery_probe",
+                                "note": "official_positions_absent",
+                            }
+                        )
+                        failed += 1
+                        continue
 
             if not reason:
-                self._hydrate_topic_metadata_for_blacklist(token_id)
                 title_policy = self._enforce_title_blacklist_policy(
                     token_id, source="orphan_recovery_probe"
                 )
@@ -11576,9 +12049,18 @@ class AutoRunManager:
             "position_snapshot": position_snapshot or {},
         }
         self._append_orphan_token_record(record)
+        invalidated_refill_records = 0
+        if self._is_terminal_exit_reason(reason):
+            invalidated_refill_records = self._invalidate_refill_records_for_token(
+                token_id,
+                block_reason=str(reason),
+                block_source="terminal_orphan",
+            )
+            self._refill_retry_counts.pop(token_id, None)
         print(
             f"[ORPHAN] token={token_id[:20]}... reason={reason} source={trigger_source} "
-            f"note={note or '-'} stoploss_owner_cleared={had_stoploss_owner}"
+            f"note={note or '-'} stoploss_owner_cleared={had_stoploss_owner} "
+            f"refill_records_blocked={invalidated_refill_records}"
         )
 
     def _unified_position_cycle_interval_sec(self) -> float:
@@ -11850,10 +12332,10 @@ class AutoRunManager:
             print(f"[RESTORE] 从运行状态恢复 {len(active_tokens_from_snapshot)} 个活跃 token 到 handled_topics")
 
         # ===== 构建黑名单：确定已死亡的 token =====
-        # 只过滤 MARKET_CLOSED 的 token，避免误删正常 token
+        # 过滤已确认 terminal 的 token，避免 runtime restore 把它们重新拉回普通路径。
         dead_tokens: set = set()
         for record in self._load_exit_tokens():
-            if record.get("exit_reason") == "MARKET_CLOSED":
+            if self._is_terminal_exit_reason(record.get("exit_reason")):
                 tid = record.get("token_id")
                 if tid:
                     dead_tokens.add(str(tid))
@@ -12248,11 +12730,6 @@ def load_configs(
     )
 
 
-def _panel_stop_requested() -> bool:
-    stop_file = os.getenv("POLY_PANEL_STOP_FILE")
-    return bool(stop_file and Path(stop_file).exists())
-
-
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
     global_conf, strategy_conf, run_params_template = load_configs(args)
@@ -12282,9 +12759,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.no_repl or args.command:
         try:
             while worker.is_alive():
-                if _panel_stop_requested():
-                    print("[PANEL] graceful stop requested by panel")
-                    manager.stop_event.set()
                 time.sleep(global_conf.command_poll_sec)
         except KeyboardInterrupt:
             print("\n[WARN] Ctrl+C detected, stopping...")

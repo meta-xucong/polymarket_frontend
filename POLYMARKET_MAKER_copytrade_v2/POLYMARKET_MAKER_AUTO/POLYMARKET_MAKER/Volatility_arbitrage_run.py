@@ -3249,6 +3249,29 @@ def main(run_config: Optional[Dict[str, Any]] = None):
             f"reason={force_sell_only_reason}，启动后直接进入 SELL-ONLY"
         )
 
+    def _clear_exit_signal_after_flat(source: str) -> None:
+        if not exit_signal_path:
+            return
+        try:
+            payload = _read_exit_signal_payload()
+            if not payload:
+                payload = {"token_id": str(token_id or "")}
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            payload["active"] = False
+            payload["status"] = "done"
+            payload["consumed_at"] = now_iso
+            payload["consumed_by"] = str(source or "")
+            payload["invalidate_reason"] = "position_flat"
+            payload["updated_at"] = now_iso
+            with exit_signal_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            print(f"[EXIT] 清仓完成后已失效化 exit signal: source={source}")
+        except OSError as exc:
+            print(
+                f"[EXIT][WARN] 清仓完成但失效化 exit signal 失败: "
+                f"source={source} error={exc}"
+            )
+
     def _exit_cleanup_only(reason: str) -> None:
         """
         清仓专用函数：使用 IOC 循环卖出，直到持仓全部清完才退出。
@@ -4591,29 +4614,6 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     invalidate_reason,
                 )
         return False
-
-    def _clear_exit_signal_after_flat(source: str) -> None:
-        if not exit_signal_path:
-            return
-        try:
-            payload = _read_exit_signal_payload()
-            if not payload:
-                payload = {"token_id": str(token_id or "")}
-            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            payload["active"] = False
-            payload["status"] = "done"
-            payload["consumed_at"] = now_iso
-            payload["consumed_by"] = str(source or "")
-            payload["invalidate_reason"] = "position_flat"
-            payload["updated_at"] = now_iso
-            with exit_signal_path.open("w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            print(f"[EXIT] 清仓完成后已失效化 exit signal: source={source}")
-        except OSError as exc:
-            print(
-                f"[EXIT][WARN] 清仓完成但失效化 exit signal 失败: "
-                f"source={source} error={exc}"
-            )
 
     def _safe_topic_filename(topic_id: str) -> str:
         """与调度层保持一致的文件名安全化处理"""

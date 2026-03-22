@@ -1,30 +1,76 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Polymarket Control Panel</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260321-auth1">
 </head>
 <body>
+  <div id="auth-gate" class="auth-gate hidden">
+    <form id="auth-form" class="auth-card">
+      <h2>Panel Sign In</h2>
+      <p class="auth-note">Use the panel credentials for this VPS instance.</p>
+      <label>
+        <span class="field-label">Username</span>
+        <input name="username" autocomplete="username" required>
+      </label>
+      <label>
+        <span class="field-label">Password</span>
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div class="auth-actions">
+        <button type="submit">Sign in</button>
+      </div>
+      <p id="auth-error" class="auth-error hidden"></p>
+    </form>
+  </div>
+
+  <div id="credentials-gate" class="auth-gate hidden">
+    <form id="credentials-form" class="auth-card">
+      <h2>Update Login Credentials</h2>
+      <p class="auth-note">The default admin/admin login is only for first access. Set a new username and password before using the panel.</p>
+      <label>
+        <span class="field-label">New username</span>
+        <input id="credentials-username" name="username" minlength="3" autocomplete="username" required>
+      </label>
+      <label>
+        <span class="field-label">New password</span>
+        <input id="credentials-password" name="password" type="password" minlength="6" autocomplete="new-password" required>
+      </label>
+      <label>
+        <span class="field-label">Confirm password</span>
+        <input id="credentials-password-confirm" name="password_confirm" type="password" minlength="6" autocomplete="new-password" required>
+      </label>
+      <div class="auth-actions">
+        <button type="submit">Save credentials</button>
+      </div>
+      <p id="credentials-error" class="auth-error hidden"></p>
+    </form>
+  </div>
+
   <main class="shell">
     <section class="hero">
       <div>
         <p class="eyebrow">Single VPS Console</p>
         <h1>Polymarket Control Panel</h1>
-        <p class="lede">在一个页面中管理两套策略。保留原有配置结构，只做清晰、可控的可视化编辑。</p>
+        <p class="lede">Manage copytrade v2 and SmartMoney v3 from one remote panel.</p>
       </div>
-      <button id="refresh-all" class="ghost">刷新</button>
+      <div class="hero-actions">
+        <span id="instance-badge" class="instance-badge">instance: loading</span>
+        <button id="logout-btn" class="ghost hidden">Sign out</button>
+        <button id="refresh-all" class="ghost">Refresh</button>
+      </div>
     </section>
 
     <section class="tabbar">
       <button class="tab is-active" data-panel="v2-panel">
         POLYMARKET_MAKER v2
-        <span class="tab-tip">单账户做市策略。通过跟单信号驱动下单，并由 Autorun 调度具体话题。</span>
+        <span class="tab-tip">Single-account copytrade and autorun operations.</span>
       </button>
       <button class="tab" data-panel="v3-panel">
-        Copytrade v3 Multi
-        <span class="tab-tip">多账户跟单策略。一个目标账户，多个执行账户按各自参数独立跟单。</span>
+        SmartMoney v3 Multi
+        <span class="tab-tip">Multi-account smart money copytrade configuration.</span>
       </button>
     </section>
 
@@ -32,143 +78,106 @@
       <section class="grid">
         <article class="card status-card">
           <div class="card-head">
-            <h2>运行状态</h2>
-            <span id="status-pill" class="pill">加载中</span>
+            <h2>Runtime</h2>
+            <span id="status-pill" class="pill">Loading</span>
           </div>
           <div id="runtime-summary" class="stats"></div>
           <div class="actions" data-service-group="v2">
-            <button data-service="copytrade" data-action="start">启动 Copytrade</button>
-            <button data-service="copytrade" data-action="stop" class="ghost">停止 Copytrade</button>
-            <button data-service="copytrade" data-action="restart">重启 Copytrade</button>
-            <button data-service="autorun" data-action="start">启动 Autorun</button>
-            <button data-service="autorun" data-action="stop" class="ghost">停止 Autorun</button>
-            <button data-service="autorun" data-action="restart">重启 Autorun</button>
+            <button data-service="copytrade" data-action="start">Start Copytrade</button>
+            <button data-service="copytrade" data-action="stop" class="ghost">Stop Copytrade</button>
+            <button data-service="copytrade" data-action="restart">Restart Copytrade</button>
+            <button data-service="autorun" data-action="start">Start Autorun</button>
+            <button data-service="autorun" data-action="stop" class="ghost">Stop Autorun</button>
+            <button data-service="autorun" data-action="restart">Restart Autorun</button>
           </div>
         </article>
 
         <article class="card">
           <div class="card-head">
-            <h2>账户设置</h2>
+            <h2>Account Settings</h2>
             <span class="muted">account.json</span>
           </div>
           <form id="account-form" class="form-grid">
-            <label><span class="field-label">接口地址</span><input name="POLY_HOST" required></label>
-            <label><span class="field-label">链 ID</span><input name="POLY_CHAIN_ID" type="number" required></label>
-            <label><span class="field-label">签名类型</span><input name="POLY_SIGNATURE" type="number" required></label>
-            <label><span class="field-label">资金地址</span><input name="POLY_FUNDER" required></label>
-            <label class="full"><span class="field-label">私钥</span><input name="POLY_KEY" type="password" required></label>
+            <label><span class="field-label">Host</span><input name="POLY_HOST" required></label>
+            <label><span class="field-label">Chain ID</span><input name="POLY_CHAIN_ID" type="number" required></label>
+            <label><span class="field-label">Signature Type</span><input name="POLY_SIGNATURE" type="number" required></label>
+            <label><span class="field-label">Funder Address</span><input name="POLY_FUNDER" required></label>
+            <label class="full"><span class="field-label">Private Key</span><input name="POLY_KEY" type="password" required></label>
             <label><span class="field-label">API Key</span><input name="POLY_API_KEY"></label>
             <label><span class="field-label">API Secret</span><input name="POLY_API_SECRET" type="password"></label>
             <label><span class="field-label">API Passphrase</span><input name="POLY_API_PASSPHRASE" type="password"></label>
-            <label class="full"><span class="field-label">Data API 地址</span><input name="POLY_DATA_ADDRESS"></label>
+            <label class="full"><span class="field-label">Data API Address</span><input name="POLY_DATA_ADDRESS"></label>
             <div class="full submit-row">
-              <button type="submit">保存账户配置</button>
+              <button type="submit">Save account settings</button>
             </div>
             <div class="full profile-link-row">
-              <span class="profile-label">Polymarket 页面</span>
-              <a id="profile-link" class="profile-link disabled" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">暂无可跳转地址</a>
+              <span class="profile-label">Polymarket profile</span>
+              <a id="profile-link" class="profile-link disabled" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">No valid address</a>
             </div>
           </form>
         </article>
 
         <article class="card">
           <div class="card-head">
-            <h2>关键参数</h2>
-            <span class="muted">直接映射现有配置文件</span>
+            <h2>Core Parameters</h2>
+            <span class="muted">Mapped to existing config files</span>
           </div>
           <form id="settings-form" class="stack">
             <div class="subgrid">
-              <label><span class="field-label">目标地址</span><textarea name="target_addresses" rows="3" placeholder="每行一个地址"></textarea></label>
-              <label><span class="field-label">轮询间隔 (秒)</span><input name="poll_interval_sec" type="number" step="1"></label>
-              <label><span class="field-label">最小跟单量 (份)</span><input name="min_size" type="number" step="0.1"></label>
+              <label><span class="field-label">Target Addresses</span><textarea name="target_addresses" rows="3" placeholder="One address per line"></textarea></label>
+              <label><span class="field-label">Poll Interval (sec)</span><input name="poll_interval_sec" type="number" step="1"></label>
+              <label><span class="field-label">Minimum Size</span><input name="min_size" type="number" step="0.1"></label>
             </div>
             <div class="subgrid">
-              <label><span class="field-label">最大并发话题数</span><input name="max_concurrent_tasks" type="number" step="1"></label>
-              <label><span class="field-label">信号刷新间隔 (秒)</span><input name="copytrade_poll_seconds" type="number" step="1"></label>
-              <label><span class="field-label">调度检查间隔 (秒)</span><input name="command_poll_seconds" type="number" step="1"></label>
+              <label><span class="field-label">Max Concurrent Tasks</span><input name="max_concurrent_tasks" type="number" step="1"></label>
+              <label><span class="field-label">Copytrade Poll (sec)</span><input name="copytrade_poll_seconds" type="number" step="1"></label>
+              <label><span class="field-label">Command Poll (sec)</span><input name="command_poll_seconds" type="number" step="1"></label>
               <label>
-                <span class="field-label">策略模式</span>
+                <span class="field-label">Strategy Mode</span>
                 <select name="strategy_mode">
                   <option value="classic">classic</option>
                   <option value="aggressive">aggressive</option>
                 </select>
               </label>
-              <label>
-                <span class="field-label">
-                  额外抢占槽位
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">波动剧烈时允许额外插队处理的话题数量。数值越大，调度越激进。</span>
-                  </span>
-                </span>
-                <input name="burst_slots" type="number" step="1">
-              </label>
+              <label><span class="field-label">Burst Slots</span><input name="burst_slots" type="number" step="1"></label>
             </div>
             <div class="subgrid">
-              <label><span class="field-label">单次最大下单量 (份)</span><input name="order_size" type="number" step="0.1"></label>
-              <label><span class="field-label">单话题最大持仓 (份)</span><input name="max_position_per_market" type="number" step="0.1"></label>
+              <label><span class="field-label">Order Size</span><input name="order_size" type="number" step="0.1"></label>
+              <label><span class="field-label">Max Position / Market</span><input name="max_position_per_market" type="number" step="0.1"></label>
+              <label><span class="field-label">Drop Threshold (%)</span><input name="drop_pct" type="number" step="0.0001"></label>
+              <label><span class="field-label">Profit Target (%)</span><input name="profit_pct" type="number" step="0.0001"></label>
               <label>
-                <span class="field-label">
-                  下跌买入阈值 (%)
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">直接按百分数填写。输入 0.5 即表示 0.5%。保存时会自动换算为程序内部比例值。</span>
-                  </span>
-                </span>
-                <input name="drop_pct" type="number" step="0.0001">
-              </label>
-              <label>
-                <span class="field-label">
-                  止盈目标 (%)
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">直接按百分数填写。输入 0.3 即表示 0.3%。保存时会自动换算为程序内部比例值。</span>
-                  </span>
-                </span>
-                <input name="profit_pct" type="number" step="0.0001">
-              </label>
-              <label>
-                <span class="field-label">卖出方式</span>
+                <span class="field-label">Sell Mode</span>
                 <select name="sell_mode">
                   <option value="aggressive">aggressive</option>
                   <option value="conservative">conservative</option>
                 </select>
               </label>
               <label>
-                <span class="field-label">
-                  启用急跌保护
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">检测到短时间急跌时，先暂停买入，避免在快速下跌中被动接仓。</span>
-                  </span>
-                </span>
+                <span class="field-label">Shock Guard</span>
                 <select name="shock_guard_enabled">
                   <option value="true">true</option>
                   <option value="false">false</option>
                 </select>
               </label>
-              <label><span class="field-label">急跌观察窗口 (秒)</span><input name="shock_window_sec" type="number" step="1"></label>
-              <label>
-                <span class="field-label">
-                  急跌触发阈值 (%)
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">直接按百分数填写。输入 10 即表示 10%。保存时会自动换算为程序内部比例值。</span>
-                  </span>
-                </span>
-                <input name="shock_drop_pct" type="number" step="0.0001">
-              </label>
+              <label><span class="field-label">Shock Window (sec)</span><input name="shock_window_sec" type="number" step="1"></label>
+              <label><span class="field-label">Shock Drop (%)</span><input name="shock_drop_pct" type="number" step="0.0001"></label>
             </div>
             <div class="submit-row">
-              <button type="submit">保存关键参数</button>
+              <button type="submit">Save core parameters</button>
             </div>
           </form>
         </article>
 
         <article class="card log-card">
           <div class="card-head">
-            <h2>日志</h2>
+            <h2>Logs</h2>
             <div class="inline-actions">
-              <button id="show-copytrade-log" class="ghost">Copytrade 日志</button>
-              <button id="show-autorun-log" class="ghost">Autorun 日志</button>
+              <button id="show-copytrade-log" class="ghost">Copytrade Log</button>
+              <button id="show-autorun-log" class="ghost">Autorun Log</button>
             </div>
           </div>
-          <pre id="log-viewer" class="log-viewer">加载中...</pre>
+          <pre id="log-viewer" class="log-viewer">Loading</pre>
         </article>
       </section>
     </section>
@@ -177,135 +186,75 @@
       <section class="grid">
         <article class="card status-card">
           <div class="card-head">
-            <h2>运行状态</h2>
-            <span id="v3-status-pill" class="pill">加载中</span>
+            <h2>Runtime</h2>
+            <span id="v3-status-pill" class="pill">Loading</span>
           </div>
           <div id="v3-runtime-summary" class="stats"></div>
           <div class="actions" data-service-group="v3">
-            <button data-service="v3multi" data-action="start">启动 v3 Multi</button>
-            <button data-service="v3multi" data-action="stop" class="ghost">停止 v3 Multi</button>
-            <button data-service="v3multi" data-action="restart">重启 v3 Multi</button>
+            <button data-service="v3multi" data-action="start">Start v3 Multi</button>
+            <button data-service="v3multi" data-action="stop" class="ghost">Stop v3 Multi</button>
+            <button data-service="v3multi" data-action="restart">Restart v3 Multi</button>
           </div>
         </article>
 
         <article class="card">
           <div class="card-head">
-            <h2>常用设置</h2>
+            <h2>Global Settings</h2>
             <span class="muted">copytrade_config.json</span>
           </div>
           <form id="v3-settings-form" class="stack">
             <div class="subgrid">
-              <label><span class="field-label">目标地址</span><textarea name="target_addresses" rows="3" placeholder="每行一个地址"></textarea></label>
-              <label><span class="field-label">常规轮询间隔 (秒)</span><input name="poll_interval_sec" type="number" step="1"></label>
-              <label><span class="field-label">退出轮询间隔 (秒)</span><input name="poll_interval_sec_exiting" type="number" step="1"></label>
-              <label><span class="field-label">单次最小下单金额 (USD)</span><input name="min_order_usd" type="number" step="0.1"></label>
-              <label><span class="field-label">单次最大下单金额 (USD)</span><input name="max_order_usd" type="number" step="0.1"></label>
+              <label><span class="field-label">Target Addresses</span><textarea name="target_addresses" rows="3" placeholder="One address per line"></textarea></label>
+              <label><span class="field-label">Poll Interval (sec)</span><input name="poll_interval_sec" type="number" step="1"></label>
+              <label><span class="field-label">Exit Poll (sec)</span><input name="poll_interval_sec_exiting" type="number" step="1"></label>
+              <label><span class="field-label">Min Order USD</span><input name="min_order_usd" type="number" step="0.1"></label>
+              <label><span class="field-label">Max Order USD</span><input name="max_order_usd" type="number" step="0.1"></label>
             </div>
             <div class="subgrid">
               <label>
-                <span class="field-label">
-                  启动跟单范围
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">可选“仅跟启动后的新动作”或“启动时回放最近一段历史动作”。不改底层逻辑，只做更易懂的映射。</span>
-                  </span>
-                </span>
+                <span class="field-label">Startup Mode</span>
                 <select name="startup_mode">
-                  <option value="baseline_only">仅跟启动后的新动作</option>
-                  <option value="baseline_replay">启动时回放历史动作</option>
+                  <option value="baseline_only">baseline_only</option>
+                  <option value="baseline_replay">baseline_replay</option>
                 </select>
               </label>
+              <label><span class="field-label">Replay Window (hours)</span><input name="replay_window_hours" type="number" step="1" min="1"></label>
               <label>
-                <span class="field-label">
-                  历史回放时长 (小时)
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">仅在“启动时回放历史动作”时生效。输入 24 表示回放最近 24 小时。</span>
-                  </span>
-                </span>
-                <input name="replay_window_hours" type="number" step="1" min="1">
-              </label>
-              <label>
-                <span class="field-label">
-                  仅跟新话题
-                  <span class="hint" tabindex="0">?
-                    <span class="tooltip">开启后，程序启动时已经存在的话题不再新开仓，只处理启动后新出现的话题。</span>
-                  </span>
-                </span>
+                <span class="field-label">Follow New Topics Only</span>
                 <select name="follow_new_topics_only">
-                  <option value="false">否</option>
-                  <option value="true">是</option>
+                  <option value="false">false</option>
+                  <option value="true">true</option>
                 </select>
               </label>
             </div>
 
             <details class="advanced-box">
-              <summary>高级配置</summary>
+              <summary>Advanced Controls</summary>
               <div class="advanced-grid">
-                <p class="advanced-note">这里放默认额度、Maker/Taker 切换和低价保护。普通场景不改也能稳定运行。</p>
+                <p class="advanced-note">These values override risk, maker/taker, and low-price guard behavior for the integrated runtime.</p>
                 <div class="subgrid">
-                  <label>
-                    <span class="field-label">
-                      默认单 Token 上限 (USD)
-                      <span class="hint" tabindex="0">?
-                        <span class="tooltip">作为所有账户的默认值。若某个账户单独填写了自己的上限，则以账户值为准。</span>
-                      </span>
-                    </span>
-                    <input name="max_notional_per_token" type="number" step="0.1" placeholder="建议 5">
-                  </label>
-                  <label>
-                    <span class="field-label">
-                      默认总金额上限 (USD)
-                      <span class="hint" tabindex="0">?
-                        <span class="tooltip">作为所有账户的默认总上限。若某个账户单独填写了自己的上限，则以账户值为准。</span>
-                      </span>
-                    </span>
-                    <input name="max_notional_total" type="number" step="0.1" placeholder="建议 200">
-                  </label>
+                  <label><span class="field-label">Default Max Notional / Token (USD)</span><input name="max_notional_per_token" type="number" step="0.1"></label>
+                  <label><span class="field-label">Default Max Notional Total (USD)</span><input name="max_notional_total" type="number" step="0.1"></label>
                 </div>
                 <div class="subgrid">
                   <label>
-                    <span class="field-label">
-                      启用 Taker
-                      <span class="hint" tabindex="0">?
-                        <span class="tooltip">开启后，当点差小于等于阈值时优先直接成交；点差较大时维持 Maker 挂单。</span>
-                      </span>
-                    </span>
+                    <span class="field-label">Taker Enabled</span>
                     <select name="taker_enabled">
                       <option value="true">true</option>
                       <option value="false">false</option>
                     </select>
                   </label>
+                  <label><span class="field-label">Taker Spread Threshold</span><input name="taker_spread_threshold" type="number" step="0.0001"></label>
                   <label>
-                    <span class="field-label">
-                      点差切换阈值
-                      <span class="hint" tabindex="0">?
-                        <span class="tooltip">当前代码规则是：点差小于等于此值时优先 Taker，点差大于此值时优先 Maker。</span>
-                      </span>
-                    </span>
-                    <input name="taker_spread_threshold" type="number" step="0.0001">
-                  </label>
-                  <label>
-                    <span class="field-label">Taker 订单类型</span>
+                    <span class="field-label">Taker Order Type</span>
                     <select name="taker_order_type">
                       <option value="FAK">FAK</option>
                       <option value="FOK">FOK</option>
                     </select>
                   </label>
+                  <label><span class="field-label">Maker Max Wait (sec)</span><input name="maker_max_wait_sec" type="number" step="1"></label>
                   <label>
-                    <span class="field-label">
-                      Maker 最长等待时间 (秒)
-                      <span class="hint" tabindex="0">?
-                        <span class="tooltip">若启用“超时转 Taker”，Maker 挂单等待超过这个秒数后会转为 Taker。</span>
-                      </span>
-                    </span>
-                    <input name="maker_max_wait_sec" type="number" step="1">
-                  </label>
-                  <label>
-                    <span class="field-label">
-                      超时转 Taker
-                      <span class="hint" tabindex="0">?
-                        <span class="tooltip">开启后，Maker 挂单长时间未成交会自动切换为 Taker。这个逻辑叠加在点差阈值之上。</span>
-                      </span>
-                    </span>
+                    <span class="field-label">Maker to Taker</span>
                     <select name="maker_to_taker_enabled">
                       <option value="true">true</option>
                       <option value="false">false</option>
@@ -314,66 +263,66 @@
                 </div>
                 <div class="subgrid">
                   <label>
-                    <span class="field-label">启用低价防护</span>
+                    <span class="field-label">Low Price Guard</span>
                     <select name="lowp_guard_enabled">
                       <option value="true">true</option>
                       <option value="false">false</option>
                     </select>
                   </label>
-                  <label><span class="field-label">低价判定阈值</span><input name="lowp_price_threshold" type="number" step="0.0001"></label>
-                  <label><span class="field-label">低价跟单比例系数</span><input name="lowp_follow_ratio_mult" type="number" step="0.0001"></label>
-                  <label><span class="field-label">低价最小下单金额 (USD)</span><input name="lowp_min_order_usd" type="number" step="0.1"></label>
-                  <label><span class="field-label">低价最大下单金额 (USD)</span><input name="lowp_max_order_usd" type="number" step="0.1"></label>
+                  <label><span class="field-label">Low Price Threshold</span><input name="lowp_price_threshold" type="number" step="0.0001"></label>
+                  <label><span class="field-label">Low Price Follow Multiplier</span><input name="lowp_follow_ratio_mult" type="number" step="0.0001"></label>
+                  <label><span class="field-label">Low Price Min USD</span><input name="lowp_min_order_usd" type="number" step="0.1"></label>
+                  <label><span class="field-label">Low Price Max USD</span><input name="lowp_max_order_usd" type="number" step="0.1"></label>
                 </div>
               </div>
             </details>
 
             <div class="submit-row">
-              <button type="submit">保存全局设置</button>
+              <button type="submit">Save global settings</button>
             </div>
           </form>
         </article>
 
         <article class="card">
           <div class="card-head">
-            <h2>账户设置</h2>
+            <h2>Account Settings</h2>
             <span class="muted">accounts.json</span>
           </div>
           <div class="stack">
             <label>
-              <span class="field-label">选择账户</span>
+              <span class="field-label">Selected Account</span>
               <select id="v3-account-select"></select>
             </label>
             <form id="v3-account-form" class="form-grid">
               <input type="hidden" name="index">
-              <label><span class="field-label">账户名称</span><input name="name"></label>
+              <label><span class="field-label">Account Name</span><input name="name"></label>
               <label>
-                <span class="field-label">是否启用</span>
+                <span class="field-label">Enabled</span>
                 <select name="enabled">
                   <option value="true">true</option>
                   <option value="false">false</option>
                 </select>
               </label>
-              <label class="full"><span class="field-label">执行账户地址</span><input name="my_address"></label>
-              <label class="full"><span class="field-label">账户私钥</span><input name="private_key" type="password"></label>
-              <label><span class="field-label">跟单比例</span><input name="follow_ratio" type="number" step="0.01"></label>
+              <label class="full"><span class="field-label">Execution Address</span><input name="my_address"></label>
+              <label class="full"><span class="field-label">Private Key</span><input name="private_key" type="password"></label>
+              <label><span class="field-label">Follow Ratio</span><input name="follow_ratio" type="number" step="0.01"></label>
               <details class="advanced-box full">
-                <summary>当前账户高级配置</summary>
+                <summary>Account Overrides</summary>
                 <div class="advanced-grid">
-                  <p class="advanced-note">留空则继承全局默认值。只有需要给单个账户单独设额度时才填写。</p>
+                  <p class="advanced-note">Leave blank to inherit from the global defaults.</p>
                   <div class="subgrid">
-                    <label><span class="field-label">账户专用单 Token 上限 (USD)</span><input name="max_notional_per_token" type="number" step="0.1" placeholder="留空继承全局"></label>
-                    <label><span class="field-label">账户专用总金额上限 (USD)</span><input name="max_notional_total" type="number" step="0.1" placeholder="留空继承全局"></label>
+                    <label><span class="field-label">Account Max Notional / Token (USD)</span><input name="max_notional_per_token" type="number" step="0.1"></label>
+                    <label><span class="field-label">Account Max Notional Total (USD)</span><input name="max_notional_total" type="number" step="0.1"></label>
                   </div>
                 </div>
               </details>
               <div class="full submit-row">
-                <button type="submit">保存当前账户</button>
-                <button id="delete-v3-account" type="button" class="ghost danger">删除当前账户</button>
+                <button type="submit">Save selected account</button>
+                <button id="delete-v3-account" type="button" class="ghost danger">Delete selected account</button>
               </div>
               <div class="full profile-link-row">
-                <span class="profile-label">当前账户 Polymarket 页面</span>
-                <a id="v3-profile-link" class="profile-link disabled" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">暂无可跳转地址</a>
+                <span class="profile-label">Polymarket profile</span>
+                <a id="v3-profile-link" class="profile-link disabled" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">No valid address</a>
               </div>
             </form>
           </div>
@@ -381,18 +330,18 @@
 
         <article class="card log-card">
           <div class="card-head">
-            <h2>日志</h2>
+            <h2>Logs</h2>
             <div class="inline-actions">
-              <button id="show-v3-log" class="ghost">v3 Multi 日志</button>
+              <button id="show-v3-log" class="ghost">v3 Multi Log</button>
             </div>
           </div>
-          <pre id="v3-log-viewer" class="log-viewer">加载中...</pre>
+          <pre id="v3-log-viewer" class="log-viewer">Loading</pre>
         </article>
       </section>
     </section>
   </main>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260321-auth1"></script>
 </body>
 </html>
