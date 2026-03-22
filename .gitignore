@@ -13,12 +13,10 @@ Thumbs.db
 PolymarketDesktop_Final/
 POLYMARKET_MAKER_copytrade_v2/panel/dist_closed/
 POLYMARKET_MAKER_copytrade_v2/panel/run/
-POLYMARKET_MAKER_copytrade_v2/account.json
 POLYMARKET_MAKER_copytrade_v2/copytrade/tokens_from_copytrade.json
 POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_state.json
 POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_sell_signals.json
 POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/data/*.json
-POLY_SMARTMONEY/copytrade_v3_muti/accounts.json
 POLY_SMARTMONEY/copytrade_v3_muti/state_*.json
 POLY_SMARTMONEY/copytrade_v3_muti/logs/
 
@@ -33,3 +31,4 @@ android/android/signing.properties
 
 PolymarketDesktop_Final_20260320.zip
 *.lnk
+release_assets/
