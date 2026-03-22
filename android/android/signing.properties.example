@@ -1,0 +1,4 @@
+storeFile=../keystore/polymarket-panel-release.jks
+storePassword=replace-with-store-password
+keyAlias=polymarket-panel
+keyPassword=replace-with-key-password
