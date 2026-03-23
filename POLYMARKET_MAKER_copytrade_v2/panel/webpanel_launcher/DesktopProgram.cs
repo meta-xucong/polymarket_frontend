@@ -26,7 +26,6 @@ namespace PolymarketDesktopLauncher
             startInfo.EnvironmentVariables["POLY_DESKTOP_APP_MODE"] = "desktop";
             startInfo.EnvironmentVariables["POLY_APP_ROOT"] = Path.Combine(baseDir, "app_root");
             startInfo.EnvironmentVariables["POLY_DESKTOP_BIN_DIR"] = Path.Combine(baseDir, "bin");
-            startInfo.EnvironmentVariables["POLY_FORCE_SOURCE_SERVICES"] = "1";
 
             Process.Start(startInfo);
         }
