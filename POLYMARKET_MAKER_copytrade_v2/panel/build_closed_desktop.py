@@ -43,7 +43,7 @@ SERVICE_TARGETS: tuple[ServiceBuildTarget, ...] = (
     ServiceBuildTarget(
         stem="autorun_v2_service",
         script_path=PANEL_DIR / "desktop_targets" / "autorun_v2_service.py",
-        mode="onefile",
+        mode="standalone",
         pythonpath=(
             V2_ROOT / "POLYMARKET_MAKER_AUTO",
             V2_ROOT / "POLYMARKET_MAKER_AUTO" / "POLYMARKET_MAKER",
@@ -81,7 +81,7 @@ def _write_launcher() -> None:
         "cd /d %~dp0\r\n"
         "set POLY_APP_ROOT=%~dp0app_root\r\n"
         "set POLY_DESKTOP_BIN_DIR=%~dp0bin\r\n"
-        "set POLY_FORCE_SOURCE_SERVICES=1\r\n"
+        "set POLY_DESKTOP_APP_MODE=desktop\r\n"
         "start \"\" \"%~dp0PolymarketDesktop.exe\"\r\n"
     )
     (RELEASE_DIR / "LaunchDesktop.bat").write_text(launcher_body, encoding="utf-8")
@@ -93,7 +93,7 @@ def _write_launcher() -> None:
         "set POLY_APP_ROOT=%~dp0app_root\r\n"
         "set POLY_DESKTOP_BIN_DIR=%~dp0bin\r\n"
         "set POLY_DESKTOP_FORCE_BROWSER=1\r\n"
-        "set POLY_FORCE_SOURCE_SERVICES=1\r\n"
+        "set POLY_DESKTOP_APP_MODE=browser\r\n"
         "start \"\" \"%~dp0PolymarketWebPanel.exe\"\r\n"
     )
     (RELEASE_DIR / "LaunchWebPanel.bat").write_text(web_launcher_body, encoding="utf-8")

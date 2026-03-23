@@ -260,37 +260,79 @@ def _resolve_service_executable(bin_dir: Path | None, stem: str) -> Path | None:
     return None
 
 
+def _build_service_spec(
+    *,
+    packaged_executable: Path | None,
+    source_cwd: Path,
+    source_cmd: list[str],
+    log_path: Path,
+    frozen_runtime: bool,
+    force_source: bool,
+) -> Dict[str, Any]:
+    if not force_source and packaged_executable and packaged_executable.exists():
+        return {
+            "cwd": packaged_executable.parent,
+            "cmd": [str(packaged_executable)],
+            "log": log_path,
+            "mode": "packaged",
+        }
+
+    if force_source or not frozen_runtime:
+        return {
+            "cwd": source_cwd,
+            "cmd": source_cmd,
+            "log": log_path,
+            "mode": "source",
+        }
+
+    return {
+        "cwd": source_cwd,
+        "cmd": None,
+        "log": log_path,
+        "mode": "missing",
+        "error": "packaged service executable is missing",
+    }
+
+
 def _resolve_local_service_specs() -> Dict[str, Dict[str, Any]]:
     if LOCAL_SERVICE_SPECS:
         return LOCAL_SERVICE_SPECS
 
     python_cmd = _resolve_python_command()
     force_source = os.getenv("POLY_FORCE_SOURCE_SERVICES") == "1"
+    frozen_runtime = bool(getattr(sys, "frozen", False))
     bin_dir = resolve_desktop_bin_dir()
     v2_root = resolve_v2_root()
     v3_root = resolve_v3_root()
     copytrade_bin = _resolve_service_executable(bin_dir, "copytrade_v2_service")
+    autorun_bin = _resolve_service_executable(bin_dir, "autorun_v2_service")
+    v3multi_bin = _resolve_service_executable(bin_dir, "copytrade_v3_multi_service")
 
     specs = {
-        "copytrade": {
-            "cwd": v2_root / "copytrade",
-            "cmd": (
-                [str(copytrade_bin)]
-                if (not force_source) and copytrade_bin and copytrade_bin.exists()
-                else [*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"]
-            ),
-            "log": v2_root / "copytrade" / "copytrade_systemd.log",
-        },
-        "autorun": {
-            "cwd": v2_root / "POLYMARKET_MAKER_AUTO",
-            "cmd": [*python_cmd, "poly_maker_autorun.py", "--no-repl"],
-            "log": v2_root / "POLYMARKET_MAKER_AUTO" / "autorun_systemd.log",
-        },
-        "v3multi": {
-            "cwd": v3_root,
-            "cmd": [*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"],
-            "log": v3_root / "logs" / "panel_runtime.log",
-        },
+        "copytrade": _build_service_spec(
+            packaged_executable=copytrade_bin,
+            source_cwd=v2_root / "copytrade",
+            source_cmd=[*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"],
+            log_path=v2_root / "copytrade" / "copytrade_systemd.log",
+            frozen_runtime=frozen_runtime,
+            force_source=force_source,
+        ),
+        "autorun": _build_service_spec(
+            packaged_executable=autorun_bin,
+            source_cwd=v2_root / "POLYMARKET_MAKER_AUTO",
+            source_cmd=[*python_cmd, "poly_maker_autorun.py", "--no-repl"],
+            log_path=v2_root / "POLYMARKET_MAKER_AUTO" / "autorun_systemd.log",
+            frozen_runtime=frozen_runtime,
+            force_source=force_source,
+        ),
+        "v3multi": _build_service_spec(
+            packaged_executable=v3multi_bin,
+            source_cwd=v3_root,
+            source_cmd=[*python_cmd, "copytrade_run.py", "--config", "copytrade_config.json"],
+            log_path=v3_root / "logs" / "panel_runtime.log",
+            frozen_runtime=frozen_runtime,
+            force_source=force_source,
+        ),
     }
     LOCAL_SERVICE_SPECS.update(specs)
     return LOCAL_SERVICE_SPECS
@@ -454,6 +496,8 @@ def _start_local_service(service_key: str) -> Dict[str, Any]:
     spec = _resolve_local_service_specs().get(service_key)
     if not spec:
         return {"ok": False, "message": f"unknown service: {service_key}"}
+    if not spec.get("cmd"):
+        return {"ok": False, "message": str(spec.get("error") or "service command unavailable")}
 
     current_pid = _read_pid(service_key)
     if _pid_exists(current_pid):
