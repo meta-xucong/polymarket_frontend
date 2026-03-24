@@ -71,8 +71,6 @@ function maskAccountFields(account) {
   return {
     ...account,
     POLY_KEY: account.POLY_KEY || "",
-    POLY_API_SECRET: account.POLY_API_SECRET || "",
-    POLY_API_PASSPHRASE: account.POLY_API_PASSPHRASE || "",
   };
 }
 
@@ -100,8 +98,7 @@ function updateLinkState(link, address, emptyText) {
 function updateProfileLink() {
   const form = document.getElementById("account-form");
   const funder = normalizeAddress(form.elements.namedItem("POLY_FUNDER")?.value);
-  const dataAddress = normalizeAddress(form.elements.namedItem("POLY_DATA_ADDRESS")?.value);
-  updateLinkState(document.getElementById("profile-link"), dataAddress || funder, "No valid address");
+  updateLinkState(document.getElementById("profile-link"), funder, "No valid address");
 }
 
 function updateV3ProfileLink() {

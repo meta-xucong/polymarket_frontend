@@ -10,7 +10,6 @@ import webbrowser
 from pathlib import Path
 
 from runtime_paths import resolve_desktop_bin_dir, resolve_repo_root
-from server import create_http_server
 
 
 def _runtime_dir() -> Path:
@@ -97,7 +96,9 @@ def _find_port(preferred_port: int = 8787, max_attempts: int = 20) -> int:
 
 
 def _start_panel_server() -> tuple[object, str]:
-    os.environ.setdefault("POLY_APP_ROOT", str(resolve_repo_root()))
+    repo_root = resolve_repo_root()
+    os.environ.setdefault("POLY_APP_ROOT", str(repo_root))
+    os.environ.setdefault("POLY_INSTANCE_ROOT", str(repo_root))
     bin_dir = resolve_desktop_bin_dir()
     if not bin_dir and getattr(sys, "frozen", False):
         candidate = os.path.join(os.path.dirname(sys.executable), "bin")
@@ -105,6 +106,8 @@ def _start_panel_server() -> tuple[object, str]:
             bin_dir = candidate
     if bin_dir:
         os.environ.setdefault("POLY_DESKTOP_BIN_DIR", str(bin_dir))
+
+    from server import create_http_server
 
     port = _find_port()
     server = create_http_server("127.0.0.1", port)

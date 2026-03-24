@@ -117,9 +117,24 @@ def _copy_portable_tree(src: Path, dst: Path) -> None:
         "*.pid",
         "*.tmp",
         "*.lock",
+        "*.spec",
+        "bin",
+        "obj",
         "dist_closed",
+        "desktop_launcher.build",
+        "desktop_launcher.dist",
+        "desktop_launcher.onefile-build",
+        "desktop_launcher_obj",
+        "desktop_launcher_publish",
+        "desktop_launcher_publish_ns",
         "run",
         "logs",
+        "nuitka-crash-report.xml",
+        "webpanel_entry.build",
+        "webpanel_entry.dist",
+        "webpanel_entry.onefile-build",
+        "web_launcher_publish",
+        "web_launcher_publish_ns",
     )
     if dst.exists():
         shutil.rmtree(dst)
@@ -133,9 +148,33 @@ def _copy_portable_app_root() -> None:
     _copy_portable_tree(V3_ROOT, smartmoney_dst / "copytrade_v3_muti")
 
 
+def _copy_dir(src: Path, dst: Path) -> None:
+    if not src.exists():
+        raise FileNotFoundError(f"missing directory: {src}")
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+def _copy_dir_contents(src: Path, dst: Path) -> None:
+    if not src.exists():
+        raise FileNotFoundError(f"missing directory: {src}")
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        dest = dst / child.name
+        if child.is_dir():
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(child, dest)
+        else:
+            shutil.copy2(child, dest)
+
+
 def _copy_release_artifacts() -> None:
-    shutil.copy2(DIST_DIR / "PolymarketDesktop.exe", RELEASE_DIR / "PolymarketDesktop.exe")
-    shutil.copy2(DIST_DIR / "PolymarketWebPanel.exe", RELEASE_DIR / "PolymarketWebPanel.exe")
+    _copy_dir(DIST_DIR / "desktop_runtime" / "PolymarketDesktop", RELEASE_DIR / "desktop_runtime")
+    _copy_dir(DIST_DIR / "webpanel_runtime" / "PolymarketWebPanel", RELEASE_DIR / "webpanel_runtime")
+    _copy_dir_contents(DIST_DIR / "desktop_launcher_publish_ns", RELEASE_DIR)
+    _copy_dir_contents(DIST_DIR / "web_launcher_publish_ns", RELEASE_DIR)
     for target in SERVICE_TARGETS:
         if target.mode == "standalone":
             dist_dir = BIN_DIR / f"{target.stem}.dist"
@@ -158,36 +197,70 @@ def main() -> None:
     _prepare_release()
 
     python = sys.executable
-    common = [
+    pyinstaller_common = [
         python,
         "-m",
-        "nuitka",
-        "--standalone",
-        "--assume-yes-for-downloads",
-        f"--output-dir={DIST_DIR}",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--noconsole",
+        "--onedir",
     ]
 
     _run(
-        common
+        pyinstaller_common
         + [
-            "--onefile",
-            "--windows-console-mode=disable",
-            f"--include-data-dir={PANEL_DIR / 'static'}=static",
-            f"--include-data-file={PANEL_DIR / 'README.md'}=README.md",
-            "--output-filename=PolymarketDesktop.exe",
+            "--name=PolymarketDesktop",
+            f"--distpath={DIST_DIR / 'desktop_runtime'}",
+            f"--workpath={DIST_DIR / 'desktop_runtime_build'}",
+            f"--specpath={DIST_DIR / 'desktop_runtime_spec'}",
+            f"--add-data={PANEL_DIR / 'static'};static",
+            f"--add-data={PANEL_DIR / 'README.md'};.",
             str(PANEL_DIR / "desktop_launcher.py"),
         ]
     )
 
     _run(
-        common
+        pyinstaller_common
         + [
-            "--onefile",
-            "--windows-console-mode=disable",
-            f"--include-data-dir={PANEL_DIR / 'static'}=static",
-            f"--include-data-file={PANEL_DIR / 'README.md'}=README.md",
-            "--output-filename=PolymarketWebPanel.exe",
+            "--name=PolymarketWebPanel",
+            f"--distpath={DIST_DIR / 'webpanel_runtime'}",
+            f"--workpath={DIST_DIR / 'webpanel_runtime_build'}",
+            f"--specpath={DIST_DIR / 'webpanel_runtime_spec'}",
+            f"--add-data={PANEL_DIR / 'static'};static",
+            f"--add-data={PANEL_DIR / 'README.md'};.",
             str(PANEL_DIR / "webpanel_entry.py"),
+        ]
+    )
+
+    _run(
+        [
+            "dotnet",
+            "publish",
+            str(PANEL_DIR / "webpanel_launcher" / "DesktopLauncher.csproj"),
+            "-c",
+            "Release",
+            "-r",
+            "win-x64",
+            "--self-contained",
+            "true",
+            "-o",
+            str(DIST_DIR / "desktop_launcher_publish_ns"),
+        ]
+    )
+    _run(
+        [
+            "dotnet",
+            "publish",
+            str(PANEL_DIR / "webpanel_launcher" / "WebLauncher.csproj"),
+            "-c",
+            "Release",
+            "-r",
+            "win-x64",
+            "--self-contained",
+            "true",
+            "-o",
+            str(DIST_DIR / "web_launcher_publish_ns"),
         ]
     )
 
