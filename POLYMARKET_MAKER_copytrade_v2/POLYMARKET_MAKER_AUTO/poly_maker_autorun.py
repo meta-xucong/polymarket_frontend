@@ -315,10 +315,19 @@ class _TeeStream:
         self._secondary = secondary
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _safe_write(stream: Any, data: str) -> int:
+        try:
+            return stream.write(data)
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            sanitized = data.encode(encoding, errors="replace").decode(encoding, errors="replace")
+            return stream.write(sanitized)
+
     def write(self, data: str) -> int:
         with self._lock:
-            written = self._primary.write(data)
-            self._secondary.write(data)
+            written = self._safe_write(self._primary, data)
+            self._safe_write(self._secondary, data)
             self._secondary.flush()
             return written
 
@@ -10736,11 +10745,11 @@ class AutoRunManager:
                     "last_seen": item.get("last_seen"),
                 }
             )
-        print(f"[COPYTRADE] 已读取 token {len(topics)} 条 | {path}")
+        print(f"[AUTORUN][TOKEN_SOURCE] 已读取 token {len(topics)} 条 | {path}")
         if skipped_not_buy:
-            print(f"[COPYTRADE] 已跳过非BUY引入 token {skipped_not_buy} 条")
+            print(f"[AUTORUN][TOKEN_SOURCE] 已跳过非BUY引入 token {skipped_not_buy} 条")
         if skipped_follow_cooldown:
-            print(f"[COPYTRADE] 已跳过冷却中 token {skipped_follow_cooldown} 条")
+            print(f"[AUTORUN][TOKEN_SOURCE] 已跳过冷却中 token {skipped_follow_cooldown} 条")
         return topics
 
     def _load_copytrade_sell_signals(self) -> Dict[str, Dict[str, Any]]:
@@ -10778,9 +10787,9 @@ class AutoRunManager:
             signals[str(token_id)] = entry
         if signals:
             preview = ", ".join(list(signals.keys())[:5])
-            print(f"[COPYTRADE] 已读取 sell 信号 {len(signals)} 条 preview={preview}")
+            print(f"[AUTORUN][TOKEN_SOURCE] 已读取 sell 信号 {len(signals)} 条 preview={preview}")
         if skipped:
-            print(f"[COPYTRADE] 已跳过未引入的 sell 信号 {skipped} 条")
+            print(f"[AUTORUN][TOKEN_SOURCE] 已跳过未引入的 sell 信号 {skipped} 条")
         return signals
 
     @staticmethod
