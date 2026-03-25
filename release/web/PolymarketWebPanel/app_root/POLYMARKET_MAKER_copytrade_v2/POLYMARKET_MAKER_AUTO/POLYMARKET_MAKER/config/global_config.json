@@ -1,0 +1,93 @@
+{
+  "scheduler": {
+    "max_concurrent_tasks": 15,
+    "command_poll_seconds": 30.0,
+    "copytrade_poll_seconds": 30.0,
+    "strategy_mode": "classic",
+    "burst_slots": 10,
+    "enable_burst_queue": true,
+    "enable_reentry": true,
+    "exhausted_keep_orders": true,
+    "exhausted_enable_reentry": true,
+    "aggressive_enable_self_sell_reentry": false,
+    "classic_keep_orders_price_threshold": 0.8,
+    "aggressive_reentry_source": "self_account_fills_only",
+    "aggressive_first_sell_fill_only": true,
+    "aggressive_sell_fill_poll_sec": 15.0,
+    "enable_slot_refill": true,
+    "refill_cooldown_minutes": 5,
+    "refill_cooldown_minutes_with_position": 5,
+    "refill_cooldown_minutes_no_position": 20,
+    "max_refill_retries": 6,
+    "refill_check_interval_sec": 60.0,
+    "stoploss": {
+      "enabled": true,
+      "check_interval_sec": 60.0,
+      "base_drawdown_pct": 0.05,
+      "reentry_window_cooldown_minutes": 120.0,
+      "next_stoploss_cooldown_minutes": 30.0,
+      "reentry_extra_delay_after_5_cuts_hours": 24.0,
+      "reference_tick_size": 0.01,
+      "reentry_line_ticks": 2,
+      "reentry_zone_lower_pct": 0.02,
+      "probe_break_pct": 0.08,
+      "daily_reentry_loss_circuit_breaker_pct": 0.10,
+      "drawdown_step_per_cycle_pct": 0.01,
+      "drawdown_step_per_cycle_ticks": 1,
+      "confirm_rounds": 2,
+      "max_tokens_per_cycle": 3
+    },
+    "startup_orphan_profit_sweep_enabled": true,
+    "startup_orphan_profit_sweep_min_profit_pct": 0.01,
+    "startup_orphan_profit_sweep_skip_if_open_sell": true,
+    "total_liquidation": {
+      "enable_total_liquidation": true,
+      "min_interval_hours": 6.0,
+      "trigger": {
+        "idle_slot_ratio_threshold": 0.7,
+        "idle_slot_duration_minutes": 90.0,
+        "no_trade_duration_minutes": 90.0,
+        "min_free_balance": 10.0,
+        "enable_low_balance_force_trigger": false,
+        "low_balance_force_hours": 6.0,
+        "require_conditions": 2,
+        "balance_poll_interval_sec": 600.0,
+        "startup_grace_hours": 4.0
+      },
+      "liquidation": {
+        "token_scope_mode": "all_positions",
+        "position_value_threshold": 3.0,
+        "spread_threshold": 0.01,
+        "maker_timeout_minutes": 30.0,
+        "taker_slippage_bps": 30.0
+      },
+      "reset": {
+        "hard_reset_enabled": false,
+        "remove_logs": false,
+        "remove_json_state": false
+      },
+      "execution_mode": "restart_only"
+    },
+    "price_cap_refill_stuck_minutes": 120.0,
+    "shock_refill_stuck_minutes": 45.0,
+    "buy_pause_min_free_balance": 10.0,
+    "buy_pause_balance_poll_interval_sec": 120.0,
+    "title_blacklist": {
+      "enabled": true,
+      "keywords": [
+        "vs"
+      ],
+      "match_on_slug": true,
+      "action_with_position": "sell_only_maker"
+    }
+  },
+  "maker": {
+    "poll_sec": 15.0,
+    "position_sync_interval": 60.0
+  },
+  "debug": {
+    "ws_debug_raw": false
+  }
+}
+
+
