@@ -77,6 +77,8 @@ REPO_ROOT = PROJECT_ROOT.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from account_loader import get_account_value
+
 # =====================
 # 市场状态检测模块（新增）- 必须在 sys.path 修改后导入
 # =====================
@@ -166,6 +168,16 @@ DEFAULT_GLOBAL_CONFIG = {
         "drawdown_step_per_cycle_pct": 0.01,
         "min_age_minutes": 5.0,
         "confirm_rounds": 2,
+        "spread_guard_enabled": True,
+        "wide_spread_pct": 0.035,
+        "new_position_spread_grace_minutes": 15.0,
+        "new_position_hard_grace_minutes": 5.0,
+        "spread_extra_tick_tier_1_pct": 0.02,
+        "spread_extra_tick_tier_1_ticks": 1,
+        "spread_extra_tick_tier_2_pct": 0.035,
+        "spread_extra_tick_tier_2_ticks": 2,
+        "spread_extra_tick_tier_3_pct": 0.05,
+        "spread_extra_tick_tier_3_ticks": 3,
         "min_maker_order_size": 5.0,
         "max_tokens_per_cycle": 3,
         "skip_if_global_liquidation_active": True,
@@ -414,7 +426,7 @@ def _resolve_position_address_from_env() -> tuple[Optional[str], str]:
         "POLY_FUNDER",
     )
     for env_name in env_candidates:
-        cand = os.getenv(env_name)
+        cand = get_account_value(env_name)
         if cand and str(cand).strip():
             return str(cand).strip(), f"env:{env_name}"
     return None, "缺少地址，无法从 data-api /positions 查询持仓。"
@@ -1124,6 +1136,52 @@ class GlobalConfig:
     )
     stoploss_confirm_rounds: int = int(
         (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get("confirm_rounds", 2)
+    )
+    stoploss_spread_guard_enabled: bool = bool(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get("spread_guard_enabled", True)
+    )
+    stoploss_wide_spread_pct: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get("wide_spread_pct", 0.035)
+    )
+    stoploss_new_position_spread_grace_minutes: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "new_position_spread_grace_minutes", 15.0
+        )
+    )
+    stoploss_new_position_hard_grace_minutes: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "new_position_hard_grace_minutes", 5.0
+        )
+    )
+    stoploss_spread_extra_tick_tier_1_pct: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "spread_extra_tick_tier_1_pct", 0.02
+        )
+    )
+    stoploss_spread_extra_tick_tier_1_ticks: int = int(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "spread_extra_tick_tier_1_ticks", 1
+        )
+    )
+    stoploss_spread_extra_tick_tier_2_pct: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "spread_extra_tick_tier_2_pct", 0.035
+        )
+    )
+    stoploss_spread_extra_tick_tier_2_ticks: int = int(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "spread_extra_tick_tier_2_ticks", 2
+        )
+    )
+    stoploss_spread_extra_tick_tier_3_pct: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "spread_extra_tick_tier_3_pct", 0.05
+        )
+    )
+    stoploss_spread_extra_tick_tier_3_ticks: int = int(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "spread_extra_tick_tier_3_ticks", 3
+        )
     )
     stoploss_min_maker_order_size: float = float(
         (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get("min_maker_order_size", 5.0)
@@ -1929,6 +1987,123 @@ class GlobalConfig:
                     stoploss_cfg.get(
                         "confirm_rounds",
                         merged.get("stoploss_confirm_rounds", cls.stoploss_confirm_rounds),
+                    )
+                ),
+            ),
+            stoploss_spread_guard_enabled=bool(
+                stoploss_cfg.get(
+                    "spread_guard_enabled",
+                    merged.get(
+                        "stoploss_spread_guard_enabled",
+                        cls.stoploss_spread_guard_enabled,
+                    ),
+                )
+            ),
+            stoploss_wide_spread_pct=max(
+                0.0,
+                float(
+                    stoploss_cfg.get(
+                        "wide_spread_pct",
+                        merged.get(
+                            "stoploss_wide_spread_pct",
+                            cls.stoploss_wide_spread_pct,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_new_position_spread_grace_minutes=max(
+                0.0,
+                float(
+                    stoploss_cfg.get(
+                        "new_position_spread_grace_minutes",
+                        merged.get(
+                            "stoploss_new_position_spread_grace_minutes",
+                            cls.stoploss_new_position_spread_grace_minutes,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_new_position_hard_grace_minutes=max(
+                0.0,
+                float(
+                    stoploss_cfg.get(
+                        "new_position_hard_grace_minutes",
+                        merged.get(
+                            "stoploss_new_position_hard_grace_minutes",
+                            cls.stoploss_new_position_hard_grace_minutes,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_spread_extra_tick_tier_1_pct=max(
+                0.0,
+                float(
+                    stoploss_cfg.get(
+                        "spread_extra_tick_tier_1_pct",
+                        merged.get(
+                            "stoploss_spread_extra_tick_tier_1_pct",
+                            cls.stoploss_spread_extra_tick_tier_1_pct,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_spread_extra_tick_tier_1_ticks=max(
+                0,
+                int(
+                    stoploss_cfg.get(
+                        "spread_extra_tick_tier_1_ticks",
+                        merged.get(
+                            "stoploss_spread_extra_tick_tier_1_ticks",
+                            cls.stoploss_spread_extra_tick_tier_1_ticks,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_spread_extra_tick_tier_2_pct=max(
+                0.0,
+                float(
+                    stoploss_cfg.get(
+                        "spread_extra_tick_tier_2_pct",
+                        merged.get(
+                            "stoploss_spread_extra_tick_tier_2_pct",
+                            cls.stoploss_spread_extra_tick_tier_2_pct,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_spread_extra_tick_tier_2_ticks=max(
+                0,
+                int(
+                    stoploss_cfg.get(
+                        "spread_extra_tick_tier_2_ticks",
+                        merged.get(
+                            "stoploss_spread_extra_tick_tier_2_ticks",
+                            cls.stoploss_spread_extra_tick_tier_2_ticks,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_spread_extra_tick_tier_3_pct=max(
+                0.0,
+                float(
+                    stoploss_cfg.get(
+                        "spread_extra_tick_tier_3_pct",
+                        merged.get(
+                            "stoploss_spread_extra_tick_tier_3_pct",
+                            cls.stoploss_spread_extra_tick_tier_3_pct,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_spread_extra_tick_tier_3_ticks=max(
+                0,
+                int(
+                    stoploss_cfg.get(
+                        "spread_extra_tick_tier_3_ticks",
+                        merged.get(
+                            "stoploss_spread_extra_tick_tier_3_ticks",
+                            cls.stoploss_spread_extra_tick_tier_3_ticks,
+                        ),
                     )
                 ),
             ),
@@ -2995,6 +3170,25 @@ class AutoRunManager:
         )
         move = float(reference_ticks) * reference_tick
         return max(1, int(math.ceil(move / max(float(tick), 1e-8) - 1e-12)))
+
+    def _stoploss_spread_extra_ticks(self, spread_pct: float) -> int:
+        spread_value = max(0.0, float(spread_pct))
+        tier_3_pct = max(
+            0.0, float(self.config.stoploss_spread_extra_tick_tier_3_pct)
+        )
+        tier_2_pct = max(
+            0.0, float(self.config.stoploss_spread_extra_tick_tier_2_pct)
+        )
+        tier_1_pct = max(
+            0.0, float(self.config.stoploss_spread_extra_tick_tier_1_pct)
+        )
+        if spread_value >= tier_3_pct - 1e-12:
+            return max(0, int(self.config.stoploss_spread_extra_tick_tier_3_ticks))
+        if spread_value >= tier_2_pct - 1e-12:
+            return max(0, int(self.config.stoploss_spread_extra_tick_tier_2_ticks))
+        if spread_value >= tier_1_pct - 1e-12:
+            return max(0, int(self.config.stoploss_spread_extra_tick_tier_1_ticks))
+        return 0
 
     def _build_stoploss_reentry_band(
         self,
@@ -4544,7 +4738,67 @@ class AutoRunManager:
             )
             state["next_stoploss_trigger_ticks"] = int(threshold_ticks)
             stoploss_trigger_price = max(0.0, float(avg_price) - float(threshold_ticks) * float(tick))
-            if float(sellable_price) > stoploss_trigger_price + 1e-12:
+            spread_extra_ticks = 0
+            effective_trigger_price = float(stoploss_trigger_price)
+            if bool(self.config.stoploss_spread_guard_enabled):
+                quote = self._get_stoploss_cycle_quote(token_id)
+                quote_bid = _coerce_float((quote or {}).get("bid"))
+                quote_ask = _coerce_float((quote or {}).get("ask"))
+                if (
+                    quote_bid is not None
+                    and quote_bid > 0
+                    and quote_ask is not None
+                    and quote_ask > 0
+                    and quote_ask >= quote_bid
+                ):
+                    mid_price = (float(quote_bid) + float(quote_ask)) / 2.0
+                    spread_pct = (
+                        ((float(quote_ask) - float(quote_bid)) / mid_price)
+                        if mid_price > 0
+                        else 0.0
+                    )
+                    state["last_stoploss_spread_pct"] = float(spread_pct)
+                    state["last_stoploss_spread_bid"] = float(quote_bid)
+                    state["last_stoploss_spread_ask"] = float(quote_ask)
+                    spread_extra_ticks = self._stoploss_spread_extra_ticks(spread_pct)
+                    state["last_stoploss_spread_extra_ticks"] = int(spread_extra_ticks)
+                    effective_trigger_price = max(
+                        0.0,
+                        float(stoploss_trigger_price) - float(spread_extra_ticks) * float(tick),
+                    )
+                    state["last_stoploss_effective_trigger_price"] = float(
+                        effective_trigger_price
+                    )
+                    if spread_pct >= float(self.config.stoploss_wide_spread_pct) - 1e-12:
+                        hard_grace_sec = max(
+                            0.0,
+                            float(self.config.stoploss_new_position_hard_grace_minutes),
+                        ) * 60.0
+                        grace_sec = max(
+                            hard_grace_sec,
+                            float(self.config.stoploss_new_position_spread_grace_minutes),
+                        ) * 60.0
+                        position_age = max(0.0, float(now) - position_opened_ts)
+                        if position_age < hard_grace_sec:
+                            state["stoploss_confirm_hits"] = 0
+                            state["last_error"] = (
+                                f"wide spread hard grace active age={position_age:.0f}s "
+                                f"spread={spread_pct:.3f}"
+                            )
+                            state_dirty = True
+                            continue
+                        if (
+                            position_age < grace_sec
+                            and float(sellable_price) > effective_trigger_price + 1e-12
+                        ):
+                            state["stoploss_confirm_hits"] = 0
+                            state["last_error"] = (
+                                f"wide spread grace active age={position_age:.0f}s "
+                                f"spread={spread_pct:.3f} widened_trigger={effective_trigger_price:.6f}"
+                            )
+                            state_dirty = True
+                            continue
+            if float(sellable_price) > effective_trigger_price + 1e-12:
                 if int(state.get("stoploss_confirm_hits") or 0) != 0:
                     state["stoploss_confirm_hits"] = 0
                     state_dirty = True
@@ -4570,9 +4824,12 @@ class AutoRunManager:
                     "sellable_price": float(sellable_price),
                     "target_size": float(pos_size),
                     "confirm_hits": int(hits),
+                    "confirm_required": int(confirm_rounds),
                     "threshold_pct": float(threshold),
                     "threshold_ticks": int(threshold_ticks),
-                    "trigger_price": float(stoploss_trigger_price),
+                    "base_trigger_price": float(stoploss_trigger_price),
+                    "spread_extra_ticks": int(spread_extra_ticks),
+                    "trigger_price": float(effective_trigger_price),
                 },
             )
             self._append_exit_token_record(
@@ -4585,9 +4842,12 @@ class AutoRunManager:
                     "sellable_price": float(sellable_price),
                     "target_size": float(pos_size),
                     "confirm_hits": hits,
+                    "confirm_required": int(confirm_rounds),
                     "threshold_pct": threshold,
                     "threshold_ticks": int(threshold_ticks),
-                    "trigger_price": float(stoploss_trigger_price),
+                    "base_trigger_price": float(stoploss_trigger_price),
+                    "spread_extra_ticks": int(spread_extra_ticks),
+                    "trigger_price": float(effective_trigger_price),
                 },
                 refillable=False,
             )
@@ -6058,9 +6318,12 @@ class AutoRunManager:
             print(f"[WS][AGGREGATOR] ✓ WS连接正常 (已订阅: {stats.get('subscribed_tokens', 0)} 个token)")
 
     def _load_ws_auth(self) -> Optional[Dict[str, str]]:
-        api_key = os.getenv("POLY_API_KEY")
-        api_secret = os.getenv("POLY_API_SECRET")
-        api_passphrase = os.getenv("POLY_API_PASSPHRASE") or os.getenv("POLY_API_PASS_PHRASE")
+        api_key = get_account_value("POLY_API_KEY")
+        api_secret = get_account_value("POLY_API_SECRET")
+        api_passphrase = (
+            get_account_value("POLY_API_PASSPHRASE")
+            or get_account_value("POLY_API_PASS_PHRASE")
+        )
         if api_key and api_secret and api_passphrase:
             return {
                 "apiKey": api_key,
@@ -7927,14 +8190,6 @@ class AutoRunManager:
         merged = {**base_template, **base, **topic_overrides}
 
         topic_info = self.topic_details.get(topic_id, {})
-        queue_role = str(topic_info.get("queue_role") or "").strip().lower()
-        if queue_role in {
-            "restored_token",
-            "startup_reconcile_position",
-            "refill_with_position",
-        } and not isinstance(topic_info.get("resume_state"), dict):
-            self._ensure_resume_state_from_live_position(topic_id)
-            topic_info = self.topic_details.get(topic_id, {})
         slug = topic_info.get("slug")
         if slug:
             merged["market_url"] = f"https://polymarket.com/market/{slug}"
@@ -7990,8 +8245,6 @@ class AutoRunManager:
         if topic_info.get("force_sell_only_reason"):
             merged["force_sell_only_reason"] = str(topic_info.get("force_sell_only_reason"))
         if topic_info.get("startup_skip_if_open_sell"):
-            merged["startup_skip_if_open_sell"] = True
-        elif isinstance(resume_state, dict) and bool(resume_state.get("skip_buy")):
             merged["startup_skip_if_open_sell"] = True
         if topic_info.get("sell_exit_reason"):
             merged["exit_cleanup_reason"] = str(topic_info.get("sell_exit_reason"))
@@ -8580,7 +8833,6 @@ class AutoRunManager:
             "skip_buy": True,
         }
         detail["resume_state"] = resume_state
-        detail["startup_skip_if_open_sell"] = True
         print(
             "[RESUME] 检测到已有持仓，强制跳过买入: "
             f"token={token_id[:16]}... size={size:.4f}"
@@ -11264,32 +11516,6 @@ class AutoRunManager:
             f"token_id={token_id} source={source} reason={reason}"
         )
 
-    def _finalize_copytrade_sell_after_flat(
-        self,
-        token_id: str,
-        *,
-        task: Optional[TopicTask],
-        source: str,
-        reason: str,
-    ) -> None:
-        if not token_id:
-            return
-        self.tasks.pop(token_id, None)
-        self._mark_exit_signal_inactive(
-            token_id,
-            status="done",
-            source=source,
-            invalidate_reason="position_flat",
-        )
-        self._remove_token_from_copytrade_files(token_id)
-        self._mark_token_cycle_closed_runtime(token_id, task=task)
-        self._purge_token_runtime_state(token_id)
-        self._remove_from_handled_topics(token_id)
-        print(
-            "[COPYTRADE] SELL 信号在本地周期收口后完成终态冻结: "
-            f"token_id={token_id} source={source} reason={reason}"
-        )
-
     def _has_account_position(self, token_id: str, *, force_refresh: bool = False) -> bool:
         if not token_id:
             return False
@@ -11553,19 +11779,6 @@ class AutoRunManager:
                 allow_started_not_bought_cleanup=bool(task or token_id in self.pending_topics),
             )
             if not cycle_allowed:
-                detail = self.topic_details.get(token_id) or {}
-                terminal_reason = str(detail.get("terminal_sell_reason") or "").strip().upper()
-                if cycle_reason == "cycle_closed" and terminal_reason == "COPYTRADE_SELL":
-                    has_position = self._has_account_position(token_id, force_refresh=True)
-                    if not has_position:
-                        self._finalize_copytrade_sell_after_flat(
-                            token_id,
-                            task=task,
-                            source="copytrade_sell_signal_full_recheck",
-                            reason="cycle_closed_after_copytrade_sell",
-                        )
-                        self._handled_sell_signals.add(token_id)
-                        continue
                 self._mark_token_cycle_invalidated(
                     token_id,
                     reason=f"sell_signal_without_active_local_cycle:{cycle_reason}",
@@ -11668,12 +11881,6 @@ class AutoRunManager:
         detail["sell_trigger_source"] = str(trigger_source)
         detail["sell_exit_reason"] = exit_reason
         detail["sell_trigger_ts"] = float(now)
-        if exit_reason == "COPYTRADE_SELL":
-            detail["terminal_sell_reason"] = exit_reason
-            detail["terminal_sell_requested_at"] = float(now)
-        else:
-            detail.pop("terminal_sell_reason", None)
-            detail.pop("terminal_sell_requested_at", None)
         if task and task.is_running():
             task.no_restart = True
             task.end_reason = "sell signal"
@@ -11785,36 +11992,6 @@ class AutoRunManager:
         delay = base * (2 ** max(0, int(attempts) - 1))
         return max(30.0, min(float(delay), max_backoff))
 
-    def _get_official_orphan_terminal_market_state(
-        self, token_id: str
-    ) -> Tuple[Optional[str], Optional[MarketState]]:
-        if not token_id or not self._market_state_checker:
-            return None, None
-        condition_id = self._get_condition_id_for_token(token_id)
-        if not condition_id:
-            return None, None
-        try:
-            market_state = self._market_state_checker.check_market_state(
-                condition_id,
-                token_id,
-                use_cache=False,
-            )
-        except Exception as exc:
-            print(
-                "[ORPHAN][WARN] official market check failed: "
-                f"token={token_id[:16]}... error={exc}"
-            )
-            return None, None
-        if not market_state.is_permanently_closed:
-            return None, market_state
-        reason_map = {
-            MarketStatus.CLOSED: "MARKET_CLOSED",
-            MarketStatus.RESOLVED: "MARKET_RESOLVED",
-            MarketStatus.ARCHIVED: "MARKET_ARCHIVED",
-            MarketStatus.NOT_FOUND: "MARKET_NOT_FOUND",
-        }
-        return reason_map.get(market_state.status, "MARKET_TERMINAL_DETECTED"), market_state
-
     def _run_orphan_recovery_probe(self, now: float) -> None:
         latest = self._load_latest_orphan_states()
         if not latest:
@@ -11860,73 +12037,15 @@ class AutoRunManager:
                 reason = "copytrade_not_active"
             elif token_id in sell_signals:
                 reason = "sell_signal_active"
+            elif pos_info != "ok":
+                reason = f"position_unavailable:{pos_info}"
             else:
-                self._hydrate_topic_metadata_for_blacklist(token_id)
-                market_reason, market_state = self._get_official_orphan_terminal_market_state(
-                    token_id
-                )
-                if market_reason:
-                    condition_id = self._get_condition_id_for_token(token_id)
-                    if self._market_closed_cleaner and condition_id:
-                        try:
-                            copytrade_state_path = (
-                                self.config.copytrade_tokens_path.parent / "copytrade_state.json"
-                            )
-                            self._market_closed_cleaner.clean_closed_market(
-                                token_id=token_id,
-                                condition_id=condition_id,
-                                exit_reason=market_reason,
-                                copytrade_file=str(self.config.copytrade_tokens_path),
-                                copytrade_state_file=str(copytrade_state_path)
-                                if copytrade_state_path.exists()
-                                else None,
-                                exit_tokens_file=str(self._exit_tokens_path),
-                            )
-                        except Exception as exc:
-                            print(
-                                "[ORPHAN][WARN] terminal market cleanup failed: "
-                                f"token={token_id[:16]}... error={exc}"
-                            )
-                    self._append_orphan_token_record(
-                        {
-                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-                            "updated_ts": float(now),
-                            "token_id": token_id,
-                            "status": "manual_only",
-                            "probe_attempts": int(next_attempt),
-                            "next_probe_at": 0.0,
-                            "reason": market_reason,
-                            "trigger_source": "orphan_recovery_probe",
-                            "note": (
-                                f"official_market_status="
-                                f"{market_state.status.value if market_state else 'unknown'}"
-                            ),
-                        }
-                    )
-                    failed += 1
-                    continue
-                if pos_info != "ok":
-                    reason = f"positions_unavailable:{pos_info}"
-                else:
-                    pos_size = float(pos_snapshot.get(token_id, 0.0) or 0.0)
-                    if not self._has_actionable_position(token_id, pos_size):
-                        self._append_orphan_token_record(
-                            {
-                                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-                                "updated_ts": float(now),
-                                "token_id": token_id,
-                                "status": "manual_only",
-                                "probe_attempts": int(next_attempt),
-                                "next_probe_at": 0.0,
-                                "reason": "POSITIONS_NO_POSITION",
-                                "trigger_source": "orphan_recovery_probe",
-                                "note": "official_positions_absent",
-                            }
-                        )
-                        failed += 1
-                        continue
+                pos_size = float(pos_snapshot.get(token_id, 0.0) or 0.0)
+                if not self._has_actionable_position(token_id, pos_size):
+                    reason = "no_position"
 
             if not reason:
+                self._hydrate_topic_metadata_for_blacklist(token_id)
                 title_policy = self._enforce_title_blacklist_policy(
                     token_id, source="orphan_recovery_probe"
                 )

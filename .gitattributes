@@ -1,0 +1,5 @@
+release/**/Qt5WebEngineCore_conda.dll filter=lfs diff=lfs merge=lfs -text
+release/**/mkl_avx512.2.dll filter=lfs diff=lfs merge=lfs -text
+release/**/mkl_core.2.dll filter=lfs diff=lfs merge=lfs -text
+release/**/mkl_intel_thread.2.dll filter=lfs diff=lfs merge=lfs -text
+release/**/mkl_pgi_thread.2.dll filter=lfs diff=lfs merge=lfs -text

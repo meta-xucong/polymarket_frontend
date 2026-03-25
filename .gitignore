@@ -12,10 +12,13 @@ Thumbs.db
 
 POLYMARKET_MAKER_copytrade_v2/panel/dist_closed/
 POLYMARKET_MAKER_copytrade_v2/panel/run/
+POLYMARKET_MAKER_copytrade_v2/panel/webpanel_launcher/bin/
+POLYMARKET_MAKER_copytrade_v2/panel/webpanel_launcher/obj/
 POLYMARKET_MAKER_copytrade_v2/copytrade/tokens_from_copytrade.json
 POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_state.json
 POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_sell_signals.json
 POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/data/*.json
+POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/**/logs/
 POLY_SMARTMONEY/copytrade_v3_muti/state_*.json
 POLY_SMARTMONEY/copytrade_v3_muti/logs/
 
@@ -61,3 +64,22 @@ PolymarketDesktop_Final/app_root/**/logs/**
 PolymarketDesktop_Final/app_root/**/run/**
 PolymarketDesktop_Final/**/run/*.pid
 PolymarketDesktop_Final/**/run/*.port
+
+# Ignore release runtime outputs but keep packaged content.
+release/**/stdout.txt
+release/**/stderr.txt
+release/**/logs/**
+release/**/run/**
+release/**/data/*.json
+release/**/__pycache__/
+release/**/*.py[cod]
+release/PolymarketDesktop_Clean_*.zip
+release/PolymarketWebPanel_Clean_*.zip
+release_stage/
+release_stage/**/stdout.txt
+release_stage/**/stderr.txt
+release_stage/**/logs/**
+release_stage/**/run/**
+release_stage/**/data/*.json
+release_stage/**/__pycache__/
+release_stage/**/*.py[cod]

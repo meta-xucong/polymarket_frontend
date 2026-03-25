@@ -1,63 +1,42 @@
-# Polymarket 一体化版本（Web / Desktop / Android）
+# Polymarket Frontend Workspace
 
-这个仓库提供三个可用版本：
+这个仓库包含本地可运行的 Polymarket 前端控制台，以及相关策略与跟单代码。
 
-- 桌面版：`PolymarketDesktop_Final/PolymarketDesktop.exe`
-- 网页版：`PolymarketDesktop_Final/PolymarketWebPanel.exe`
-- 安卓版：`android/`（APK 由 GitHub Release 提供）
+## 推荐启动方式
 
-## 1. 下载后先改这两个账号文件
+优先使用最外层两个快捷方式：
 
-只需要替换你自己的账户信息和私钥：
+- `打开桌面版.lnk`
+- `打开网页版.lnk`
 
-- `POLYMARKET_MAKER_copytrade_v2/account.json`
-  - `POLY_KEY`
-  - `POLY_FUNDER`
-- `POLY_SMARTMONEY/copytrade_v3_muti/accounts.json`
-  - `my_address`
-  - `private_key`
+其中：
 
-其他参数已经保留当前默认值，开箱可用。
+- `打开桌面版.lnk` 会启动桌面版控制台窗口
+- `打开网页版.lnk` 会通过浏览器打开 `http://127.0.0.1:8787`
 
-## 2. 怎么打开
+## 备用启动方式
 
-推荐直接双击 `exe`：
+以下 bat 文件仍然保留，但仅作为备用入口：
 
-- 桌面版：`PolymarketDesktop_Final/PolymarketDesktop.exe`
-- 网页版：`PolymarketDesktop_Final/PolymarketWebPanel.exe`
+- `1_打开网页控制台.bat`
+- `2_打开本地桌面版.bat`
 
-备用入口（根目录）：
+## 目录说明
 
-- `LaunchDesktop.bat`
-- `LaunchWeb.bat`
-- `备用启动_本地桌面版.bat`
-- `备用启动_网页控制台.bat`
+- `PolymarketDesktop_Final/`
+  已整理好的本地发布目录
+- `POLYMARKET_MAKER_copytrade_v2/`
+  `v2` 主程序、前端面板和策略相关代码
+- `POLY_SMARTMONEY/`
+  `v3 multi` 相关代码
+- `docs/`
+  文档说明
+- `tools/`
+  辅助工具
+- `使用说明.txt`
+  面向日常使用的简版说明
 
-网页版默认地址：`http://127.0.0.1:8787`
+## 补充说明
 
-## 3. 安卓版说明
-
-安卓版是 Web 壳，必须先有可访问的 Web 面板（本机或 VPS）。
-
-流程：
-
-1. 先启动网页版并确认可访问。
-2. 再安装 APK。
-3. 安卓端访问你的面板地址。
-
-## 4. VPS 部署（简版）
-
-部署目录：`deploy/`
-
-核心文件：
-
-- `deploy/linux/install_instance.sh`
-- `deploy/panel.env.example`
-- `deploy/nginx/polymarket_panel.conf.example`
-
-先跑安装脚本，再配置域名反代，最后用手机访问域名验证。
-
-## 5. 安全提醒
-
-- 仓库默认账户文件已脱敏。
-- 不要把真实私钥提交到 GitHub。
+- 当前工作区已经清理掉测试缓存、临时构建目录和废弃备份文件。
+- 账户信息默认保留在本地，不应提交真实密钥到 GitHub。
