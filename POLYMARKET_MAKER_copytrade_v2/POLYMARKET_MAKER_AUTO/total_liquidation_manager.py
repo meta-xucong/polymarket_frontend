@@ -14,13 +14,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.parse
 import urllib.request
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-REPO_ROOT = PROJECT_ROOT.parent
-if str(REPO_ROOT) not in os.sys.path:
-    os.sys.path.insert(0, str(REPO_ROOT))
-
-from account_loader import get_account_value
-
 
 @dataclass
 class LiquidationConfig:
@@ -780,7 +773,7 @@ class TotalLiquidationManager:
 
     def _resolve_wallet(self) -> Optional[str]:
         for key in ("POLY_DATA_ADDRESS", "POLY_FUNDER"):
-            cand = get_account_value(key)
+            cand = os.getenv(key)
             if cand and str(cand).strip():
                 return str(cand).strip()
         return None

@@ -6,7 +6,6 @@ import socket
 import sys
 import threading
 import time
-import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -23,19 +22,6 @@ def _run_dir() -> Path:
     path = _runtime_dir() / "run"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def _log_path() -> Path:
-    return _run_dir() / "desktop_launcher.log"
-
-
-def _log(message: str) -> None:
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        with _log_path().open("a", encoding="utf-8") as fh:
-            fh.write(f"[{timestamp}] {message}\n")
-    except Exception:
-        pass
 
 
 def _instance_pid_path() -> Path:
@@ -86,13 +72,7 @@ def _read_existing_instance() -> tuple[int | None, int | None]:
     except ValueError:
         port = 0
     if _pid_exists(pid) and port > 0:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=1.5) as resp:
-                if resp.status == 200:
-                    _log(f"existing instance detected pid={pid} port={port}")
-                    return pid, port
-        except Exception:
-            _log(f"stale instance markers pid={pid} port={port}")
+        return pid, port
     _clear_instance_files()
     return None, None
 
@@ -101,7 +81,6 @@ def _clear_instance_files() -> None:
     for path in (_instance_pid_path(), _instance_port_path()):
         with contextlib.suppress(Exception):
             path.unlink()
-    _log("instance marker files cleared")
 
 
 def _find_port(preferred_port: int = 8787, max_attempts: int = 20) -> int:
@@ -134,18 +113,27 @@ def _start_panel_server() -> tuple[object, str]:
     server = create_http_server("127.0.0.1", port)
     thread = threading.Thread(target=server.serve_forever, name="panel-server", daemon=True)
     thread.start()
-    _log(f"panel server started on port {port}")
     return server, f"http://127.0.0.1:{port}"
 
 
 def _run_with_browser(url: str, server: object) -> None:
-    _log(f"opening browser for {url}")
     webbrowser.open(url)
-    idle_timeout = float(os.getenv("POLY_BROWSER_IDLE_TIMEOUT_SEC") or "45")
+    # Keep browser fallback mode alive by default.
+    # Set POLY_BROWSER_IDLE_TIMEOUT_SEC > 0 to re-enable idle auto-exit.
+    idle_timeout = float(os.getenv("POLY_BROWSER_IDLE_TIMEOUT_SEC") or "0")
     startup_grace = float(os.getenv("POLY_BROWSER_IDLE_GRACE_SEC") or "20")
+    if idle_timeout <= 0:
+        print("[DESKTOP] browser fallback mode active (idle auto-exit disabled)")
+    else:
+        print(
+            "[DESKTOP] browser fallback mode active "
+            f"(idle_timeout={idle_timeout:.0f}s grace={startup_grace:.0f}s)"
+        )
     try:
         while True:
             time.sleep(1)
+            if idle_timeout <= 0:
+                continue
             last_request_ts = float(getattr(server, "last_request_ts", time.time()))
             idle_seconds = time.time() - last_request_ts
             uptime_seconds = time.time() - float(getattr(server, "start_ts", time.time()))
@@ -156,7 +144,6 @@ def _run_with_browser(url: str, server: object) -> None:
 
 
 def main() -> None:
-    _log("desktop launcher start")
     mode_override = str(os.getenv("POLY_DESKTOP_APP_MODE") or "").strip().lower()
     if mode_override == "browser":
         force_browser = True
@@ -174,16 +161,14 @@ def main() -> None:
 
     existing_pid, existing_port = _read_existing_instance()
     if existing_pid and existing_port:
-        existing_url = f"http://127.0.0.1:{existing_port}"
-        _log(f"reusing existing url {existing_url}")
-        webbrowser.open(existing_url)
+        if force_browser:
+            webbrowser.open(f"http://127.0.0.1:{existing_port}")
         return
 
     server, url = _start_panel_server()
     setattr(server, "start_ts", time.time())
     _write_text(_instance_pid_path(), str(os.getpid()))
     _write_text(_instance_port_path(), str(getattr(server, "server_port", 0)))
-    _log(f"instance markers written pid={os.getpid()} port={getattr(server, 'server_port', 0)}")
     try:
         if force_browser:
             _run_with_browser(url, server)
@@ -191,8 +176,7 @@ def main() -> None:
 
         try:
             import webview  # type: ignore
-        except Exception as exc:
-            _log(f"webview import failed: {exc!r}")
+        except Exception:
             _run_with_browser(url, server)
             return
 
@@ -204,14 +188,9 @@ def main() -> None:
                 height=960,
                 min_size=(1180, 760),
             )
-            preferred_gui = "qt"
-            if sys.platform.startswith("win"):
-                preferred_gui = "edgechromium"
-            _log(f"starting desktop window with gui={preferred_gui}")
-            webview.start(gui=preferred_gui)
+            webview.start()
             _ = window
-        except Exception as exc:
-            _log(f"desktop window failed: {exc!r}")
+        except Exception:
             _run_with_browser(url, server)
     finally:
         _clear_instance_files()
@@ -219,7 +198,6 @@ def main() -> None:
             server.shutdown()
         with contextlib.suppress(Exception):
             server.server_close()
-        _log("desktop launcher shutdown complete")
 
 
 if __name__ == "__main__":

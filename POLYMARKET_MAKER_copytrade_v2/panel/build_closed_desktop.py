@@ -171,7 +171,7 @@ def _copy_dir_contents(src: Path, dst: Path) -> None:
 
 
 def _copy_release_artifacts() -> None:
-    _copy_dir(DIST_DIR / "desktop_runtime" / "PolymarketDesktopRuntime", RELEASE_DIR / "desktop_runtime")
+    _copy_dir(DIST_DIR / "desktop_runtime" / "PolymarketDesktop", RELEASE_DIR / "desktop_runtime")
     _copy_dir(DIST_DIR / "webpanel_runtime" / "PolymarketWebPanel", RELEASE_DIR / "webpanel_runtime")
     _copy_dir_contents(DIST_DIR / "desktop_launcher_publish_ns", RELEASE_DIR)
     _copy_dir_contents(DIST_DIR / "web_launcher_publish_ns", RELEASE_DIR)
@@ -203,13 +203,14 @@ def main() -> None:
         "PyInstaller",
         "--noconfirm",
         "--clean",
+        "--noconsole",
         "--onedir",
     ]
 
     _run(
         pyinstaller_common
         + [
-            "--name=PolymarketDesktopRuntime",
+            "--name=PolymarketDesktop",
             f"--distpath={DIST_DIR / 'desktop_runtime'}",
             f"--workpath={DIST_DIR / 'desktop_runtime_build'}",
             f"--specpath={DIST_DIR / 'desktop_runtime_spec'}",

@@ -260,7 +260,6 @@ def _resolve_service_executable(bin_dir: Path | None, stem: str) -> Path | None:
     candidates = (
         bin_dir / f"{stem}.exe",
         bin_dir / stem / f"{stem}.exe",
-        bin_dir / "bin" / stem / f"{stem}.exe",
         bin_dir / f"{stem}.dist" / f"{stem}.exe",
     )
     for candidate in candidates:
