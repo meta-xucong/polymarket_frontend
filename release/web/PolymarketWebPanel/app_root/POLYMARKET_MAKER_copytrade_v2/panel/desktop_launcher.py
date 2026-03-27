@@ -118,11 +118,22 @@ def _start_panel_server() -> tuple[object, str]:
 
 def _run_with_browser(url: str, server: object) -> None:
     webbrowser.open(url)
-    idle_timeout = float(os.getenv("POLY_BROWSER_IDLE_TIMEOUT_SEC") or "45")
+    # Keep browser fallback mode alive by default.
+    # Set POLY_BROWSER_IDLE_TIMEOUT_SEC > 0 to re-enable idle auto-exit.
+    idle_timeout = float(os.getenv("POLY_BROWSER_IDLE_TIMEOUT_SEC") or "0")
     startup_grace = float(os.getenv("POLY_BROWSER_IDLE_GRACE_SEC") or "20")
+    if idle_timeout <= 0:
+        print("[DESKTOP] browser fallback mode active (idle auto-exit disabled)")
+    else:
+        print(
+            "[DESKTOP] browser fallback mode active "
+            f"(idle_timeout={idle_timeout:.0f}s grace={startup_grace:.0f}s)"
+        )
     try:
         while True:
             time.sleep(1)
+            if idle_timeout <= 0:
+                continue
             last_request_ts = float(getattr(server, "last_request_ts", time.time()))
             idle_seconds = time.time() - last_request_ts
             uptime_seconds = time.time() - float(getattr(server, "start_ts", time.time()))
