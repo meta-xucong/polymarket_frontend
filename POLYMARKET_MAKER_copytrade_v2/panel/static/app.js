@@ -6,6 +6,21 @@ const appState = {
   instance: {},
 };
 
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function formatErrorMessage(error) {
+  const message = String(error?.message || "").trim();
+  if (!message) {
+    return "Unknown error.";
+  }
+  if (message.includes("Failed to fetch")) {
+    return "Unable to reach local panel backend. Please start with LaunchWebPanel.bat (or START_WEB_PANEL.bat) and retry.";
+  }
+  return message;
+}
+
 async function readJson(url, options = {}) {
   const response = await fetch(url, {
     credentials: "same-origin",
@@ -657,6 +672,21 @@ async function pingPanel() {
   await readJson("/api/ping");
 }
 
+async function waitForPanelBackendReady(timeoutMs = 30000, intervalMs = 800) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      await pingPanel();
+      return;
+    } catch (error) {
+      lastError = error;
+      await delay(intervalMs);
+    }
+  }
+  throw lastError || new Error("Local panel backend is not ready.");
+}
+
 async function boot() {
   document.getElementById("auth-form").addEventListener("submit", (event) => {
     login(event).catch((error) => showAuthError(error.message));
@@ -712,6 +742,7 @@ async function boot() {
     tab.addEventListener("click", () => switchPanel(tab.dataset.panel));
   });
 
+  await waitForPanelBackendReady();
   const ready = await refreshAuthSession();
   if (ready) {
     await refreshAll();
@@ -722,4 +753,4 @@ async function boot() {
   }, 15000);
 }
 
-boot().catch((error) => showToast(error.message, true));
+boot().catch((error) => showToast(formatErrorMessage(error), true));
