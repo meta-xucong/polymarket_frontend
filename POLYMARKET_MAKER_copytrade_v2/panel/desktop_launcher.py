@@ -115,7 +115,11 @@ def _start_panel_server() -> tuple[object, str]:
 
 def _run_with_browser(url: str, server: object) -> None:
     webbrowser.open(url)
-    idle_timeout = float(os.getenv("POLY_BROWSER_IDLE_TIMEOUT_SEC") or "45")
+    idle_timeout_env = os.getenv("POLY_BROWSER_IDLE_TIMEOUT_SEC")
+    if idle_timeout_env is None:
+        idle_timeout = 0.0 if getattr(sys, "frozen", False) else 45.0
+    else:
+        idle_timeout = float(idle_timeout_env)
     startup_grace = float(os.getenv("POLY_BROWSER_IDLE_GRACE_SEC") or "20")
     try:
         while True:
@@ -123,7 +127,7 @@ def _run_with_browser(url: str, server: object) -> None:
             last_request_ts = float(getattr(server, "last_request_ts", time.time()))
             idle_seconds = time.time() - last_request_ts
             uptime_seconds = time.time() - float(getattr(server, "start_ts", time.time()))
-            if uptime_seconds >= startup_grace and idle_seconds >= idle_timeout:
+            if idle_timeout > 0 and uptime_seconds >= startup_grace and idle_seconds >= idle_timeout:
                 return
     except KeyboardInterrupt:
         return

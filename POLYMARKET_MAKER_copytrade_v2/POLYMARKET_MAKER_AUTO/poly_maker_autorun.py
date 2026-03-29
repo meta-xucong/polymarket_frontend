@@ -8,6 +8,7 @@ poly_maker_autorun
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import json
 import math
@@ -7254,9 +7255,35 @@ class AutoRunManager:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
-                # 原子操作：重命名（在 Unix 系统上是原子的）
-                os.replace(tmp_path, self._ws_cache_path)
-                tmp_path = None
+                replaced = False
+                replace_error: OSError | None = None
+                for attempt in range(6):
+                    try:
+                        # ?????????? Unix ????????
+                        os.replace(tmp_path, self._ws_cache_path)
+                        tmp_path = None
+                        replaced = True
+                        break
+                    except PermissionError as exc:
+                        replace_error = exc
+                    except OSError as exc:
+                        if getattr(exc, "winerror", None) in (5, 32):
+                            replace_error = exc
+                        else:
+                            raise
+                    time.sleep(0.05 * (attempt + 1))
+
+                if not replaced:
+                    if replace_error is None:
+                        raise OSError("failed to persist ws cache")
+                    with self._ws_cache_path.open("w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                        f.flush()
+                        with contextlib.suppress(OSError):
+                            os.fsync(f.fileno())
+                    if tmp_path is not None and tmp_path.exists():
+                        tmp_path.unlink()
+                    tmp_path = None
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
         except OSError as exc:

@@ -14,6 +14,7 @@ PANEL_DIR = Path(__file__).resolve().parent
 DIST_DIR = PANEL_DIR / "dist_closed"
 BIN_DIR = DIST_DIR / "bin"
 RELEASE_DIR = resolve_repo_root() / "PolymarketDesktop_Final"
+WEB_RELEASE_DIR = resolve_repo_root() / "release" / "web" / "PolymarketWebPanel"
 APP_ROOT_DIR = RELEASE_DIR / "app_root"
 V2_ROOT = resolve_v2_root()
 V3_ROOT = resolve_v3_root()
@@ -95,11 +96,91 @@ def _write_launcher() -> None:
         "cd /d %~dp0\r\n"
         "set POLY_APP_ROOT=%~dp0app_root\r\n"
         "set POLY_DESKTOP_BIN_DIR=%~dp0bin\r\n"
+        "set POLY_FORCE_SOURCE_SERVICES=1\r\n"
+        "set PYTHONUTF8=1\r\n"
+        "set PYTHONIOENCODING=utf-8\r\n"
         "set POLY_DESKTOP_FORCE_BROWSER=1\r\n"
         "set POLY_DESKTOP_APP_MODE=browser\r\n"
+        "set ACCOUNT_JSON=%~dp0app_root\\POLYMARKET_MAKER_copytrade_v2\\account.json\r\n"
+        "set ACCOUNT_TEMPLATE=%~dp0app_root\\POLYMARKET_MAKER_copytrade_v2\\account.template.json\r\n"
+        "if not exist \"%ACCOUNT_JSON%\" (\r\n"
+        "  if exist \"%ACCOUNT_TEMPLATE%\" (\r\n"
+        "    copy /Y \"%ACCOUNT_TEMPLATE%\" \"%ACCOUNT_JSON%\" >nul\r\n"
+        "  )\r\n"
+        ")\r\n"
         "\"%~dp0PolymarketWebPanel.exe\"\r\n"
     )
     (RELEASE_DIR / "LaunchWebPanel.bat").write_text(web_launcher_body, encoding="utf-8")
+
+
+def _write_web_support_files(target_dir: Path) -> None:
+    start_body = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "cd /d %~dp0\r\n"
+        "echo [INFO] Starting Polymarket Web Panel...\r\n"
+        "echo [INFO] Keep this terminal open while using the panel.\r\n"
+        "call \"%~dp0LaunchWebPanel.bat\"\r\n"
+    )
+    (target_dir / "START_WEB_PANEL.bat").write_text(start_body, encoding="utf-8")
+
+    quickstart = (
+        "Polymarket Web Panel Quick Start\r\n"
+        "================================\r\n\r\n"
+        "1) Unzip the package to a normal folder.\r\n"
+        "2) Double-click PolymarketWebPanel.exe.\r\n"
+        "3) Keep the terminal window open while using the panel.\r\n"
+        "4) Open http://127.0.0.1:8787 if browser does not open automatically.\r\n"
+        "5) First login is admin/admin and must change credentials immediately.\r\n\r\n"
+        "Important\r\n"
+        "---------\r\n"
+        "- If you see Failed to fetch, close all panel windows and run PolymarketWebPanel.exe again.\r\n"
+        "- If 8787 is occupied, free the port and restart.\r\n"
+    )
+    (target_dir / "QUICKSTART.txt").write_text(quickstart, encoding="utf-8")
+
+
+def _clean_runtime_artifacts(root: Path) -> None:
+    patterns = (
+        "run_params_*.json",
+        "*.log",
+        "*.pid",
+        "*.tmp",
+        "*.lock",
+        "autorun_status.json",
+        "copytrade_sell_signals.json",
+        "copytrade_state.json",
+        "exit_tokens.json",
+        "handled_topics.json",
+        "orphan_tokens.json",
+        "positions_cache.json",
+        "stoploss_reentry_state.json",
+        "stoploss_reentry_state.bak.json",
+        "token_cycle_gate.json",
+        "tokens_from_copytrade.json",
+        "ws_cache.json",
+        "ws_cache.lock",
+    )
+    for pattern in patterns:
+        for path in root.rglob(pattern):
+            if path.is_file():
+                path.unlink()
+
+
+def _prepare_web_release_from_built_release() -> None:
+    if WEB_RELEASE_DIR.exists():
+        shutil.rmtree(WEB_RELEASE_DIR)
+    WEB_RELEASE_DIR.mkdir(parents=True, exist_ok=True)
+    (WEB_RELEASE_DIR / "run").mkdir(parents=True, exist_ok=True)
+
+    shutil.copy2(RELEASE_DIR / "PolymarketWebPanel.exe", WEB_RELEASE_DIR / "PolymarketWebPanel.exe")
+    shutil.copy2(RELEASE_DIR / "LaunchWebPanel.bat", WEB_RELEASE_DIR / "LaunchWebPanel.bat")
+    shutil.copy2(RELEASE_DIR / "README.md", WEB_RELEASE_DIR / "README.md")
+    shutil.copytree(RELEASE_DIR / "bin", WEB_RELEASE_DIR / "bin")
+    shutil.copytree(RELEASE_DIR / "app_root", WEB_RELEASE_DIR / "app_root")
+    shutil.copytree(PANEL_DIR / "static", WEB_RELEASE_DIR / "static")
+    _write_web_support_files(WEB_RELEASE_DIR)
+    _clean_runtime_artifacts(WEB_RELEASE_DIR / "app_root")
 
 
 def _prepare_release() -> None:
@@ -228,6 +309,8 @@ def main() -> None:
         )
 
     _copy_release_artifacts()
+    _clean_runtime_artifacts(RELEASE_DIR / "app_root")
+    _prepare_web_release_from_built_release()
     print(f"[BUILD] release ready at {RELEASE_DIR}")
 
 
