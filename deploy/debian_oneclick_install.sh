@@ -22,6 +22,15 @@ REPO_URL="${REPO_URL:-https://github.com/meta-xucong/polymarket_frontend.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 PANEL_PORT="${PANEL_PORT:-8787}"
 ENABLE_NGINX="${ENABLE_NGINX:-1}"
+PANEL_BIND_HOST="${PANEL_BIND_HOST:-}"
+
+if [[ -z "$PANEL_BIND_HOST" ]]; then
+  if [[ "$ENABLE_NGINX" == "1" ]]; then
+    PANEL_BIND_HOST="127.0.0.1"
+  else
+    PANEL_BIND_HOST="0.0.0.0"
+  fi
+fi
 
 PANEL_DIR_REL="POLYMARKET_MAKER_copytrade_v2/panel"
 V2_DIR_REL="POLYMARKET_MAKER_copytrade_v2"
@@ -42,18 +51,33 @@ step() {
   echo "[STEP] $*"
 }
 
+run_as_app() {
+  local cmd=("$@")
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$APP_USER" -- "${cmd[@]}"
+    return
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$APP_USER" "${cmd[@]}"
+    return
+  fi
+  su -s /bin/bash "$APP_USER" -c "$(printf '%q ' "${cmd[@]}")"
+}
+
 if [[ "$EUID" -ne 0 ]]; then
   echo "[ERROR] Please run as root: sudo bash $0"
   exit 1
 fi
 
 step "Update system packages"
+export DEBIAN_FRONTEND=noninteractive
 apt update
 apt upgrade -y
 
 step "Install required software"
 apt install -y \
   git curl ca-certificates \
+  openssl \
   python3 python3-venv python3-pip python3-dev \
   build-essential libssl-dev libffi-dev \
   nginx
@@ -68,21 +92,21 @@ mkdir -p "$POLY_CONF_DIR"
 
 step "Clone or update repository"
 if [[ -d "$APP_DIR/.git" ]]; then
-  sudo -u "$APP_USER" git -C "$APP_DIR" fetch --all --tags
-  sudo -u "$APP_USER" git -C "$APP_DIR" checkout "$REPO_BRANCH"
-  sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only origin "$REPO_BRANCH"
+  run_as_app git -C "$APP_DIR" fetch --all --tags
+  run_as_app git -C "$APP_DIR" checkout "$REPO_BRANCH"
+  run_as_app git -C "$APP_DIR" pull --ff-only origin "$REPO_BRANCH"
 else
-  sudo -u "$APP_USER" git clone --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
+  run_as_app git clone --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
 fi
 
 step "Create Python virtual environment"
 if [[ ! -d "$APP_DIR/.venv" ]]; then
-  sudo -u "$APP_USER" python3 -m venv "$APP_DIR/.venv"
+  run_as_app python3 -m venv "$APP_DIR/.venv"
 fi
 
 step "Install Python dependencies"
-"$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
-"$APP_DIR/.venv/bin/pip" install \
+run_as_app "$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
+run_as_app "$APP_DIR/.venv/bin/pip" install \
   requests \
   pyyaml \
   websocket-client \
@@ -90,18 +114,18 @@ step "Install Python dependencies"
   pycryptodome
 
 # Some upstream packages have different pip names across mirrors/versions.
-if ! "$APP_DIR/.venv/bin/pip" install py-clob-client; then
-  "$APP_DIR/.venv/bin/pip" install py_clob_client
+if ! run_as_app "$APP_DIR/.venv/bin/pip" install py-clob-client; then
+  run_as_app "$APP_DIR/.venv/bin/pip" install py_clob_client
 fi
-if ! "$APP_DIR/.venv/bin/pip" install py-order-utils; then
-  "$APP_DIR/.venv/bin/pip" install py_order_utils
+if ! run_as_app "$APP_DIR/.venv/bin/pip" install py-order-utils; then
+  run_as_app "$APP_DIR/.venv/bin/pip" install py_order_utils
 fi
-if ! "$APP_DIR/.venv/bin/pip" install poly-eip712-structs; then
-  "$APP_DIR/.venv/bin/pip" install poly_eip712_structs
+if ! run_as_app "$APP_DIR/.venv/bin/pip" install poly-eip712-structs; then
+  run_as_app "$APP_DIR/.venv/bin/pip" install poly_eip712_structs
 fi
 
 step "Sanity check core imports"
-"$APP_DIR/.venv/bin/python" - <<'PY'
+run_as_app "$APP_DIR/.venv/bin/python" - <<'PY'
 import requests, yaml, websocket
 from py_clob_client.client import ClobClient
 print("[OK] Python deps are importable")
@@ -113,7 +137,7 @@ POLY_APP_ROOT=$APP_DIR
 POLY_INSTANCE_ROOT=$APP_DIR
 POLY_FORCE_SOURCE_SERVICES=1
 
-POLY_PANEL_HOST=127.0.0.1
+POLY_PANEL_HOST=$PANEL_BIND_HOST
 POLY_PANEL_PORT=$PANEL_PORT
 
 POLY_AUTH_REQUIRED=1
@@ -159,7 +183,7 @@ Type=simple
 User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR/$PANEL_DIR_REL
-ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python server.py --host 127.0.0.1 --port $PANEL_PORT'
+ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python server.py --host $PANEL_BIND_HOST --port $PANEL_PORT'
 Restart=always
 RestartSec=5
 
