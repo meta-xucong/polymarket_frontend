@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================
+# Polymarket Frontend one-click install (Debian)
+# =============================================
+# Run as root:
+#   sudo bash debian_oneclick_install.sh
+#
+# Optional env overrides before running:
+#   APP_USER=polymarket
+#   APP_DIR=/opt/polymarket_frontend
+#   REPO_URL=https://github.com/meta-xucong/polymarket_frontend.git
+#   REPO_BRANCH=main
+#   PANEL_PORT=8787
+#   ENABLE_NGINX=1
+#
+
+APP_USER="${APP_USER:-polymarket}"
+APP_DIR="${APP_DIR:-/opt/polymarket_frontend}"
+REPO_URL="${REPO_URL:-https://github.com/meta-xucong/polymarket_frontend.git}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
+PANEL_PORT="${PANEL_PORT:-8787}"
+ENABLE_NGINX="${ENABLE_NGINX:-1}"
+
+PANEL_DIR_REL="POLYMARKET_MAKER_copytrade_v2/panel"
+V2_DIR_REL="POLYMARKET_MAKER_copytrade_v2"
+V3_DIR_REL="POLY_SMARTMONEY/copytrade_v3_muti"
+
+POLY_CONF_DIR="/etc/polymarket"
+PANEL_ENV_FILE="$POLY_CONF_DIR/panel.env"
+TRADING_ENV_FILE="$POLY_CONF_DIR/trading.env"
+
+PANEL_SERVICE="/etc/systemd/system/polymarket-panel.service"
+COPYTRADE_SERVICE="/etc/systemd/system/polymaker-copytrade.service"
+AUTORUN_SERVICE="/etc/systemd/system/polymaker-autorun.service"
+V3MULTI_SERVICE="/etc/systemd/system/copytrade-v3-multi.service"
+NGINX_SITE="/etc/nginx/sites-available/polymarket-panel.conf"
+
+step() {
+  echo
+  echo "[STEP] $*"
+}
+
+if [[ "$EUID" -ne 0 ]]; then
+  echo "[ERROR] Please run as root: sudo bash $0"
+  exit 1
+fi
+
+step "Update system packages"
+apt update
+apt upgrade -y
+
+step "Install required software"
+apt install -y \
+  git curl ca-certificates \
+  python3 python3-venv python3-pip python3-dev \
+  build-essential libssl-dev libffi-dev \
+  nginx
+
+step "Create app user and directories"
+if ! id -u "$APP_USER" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "$APP_USER"
+fi
+mkdir -p "$APP_DIR"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+mkdir -p "$POLY_CONF_DIR"
+
+step "Clone or update repository"
+if [[ -d "$APP_DIR/.git" ]]; then
+  sudo -u "$APP_USER" git -C "$APP_DIR" fetch --all --tags
+  sudo -u "$APP_USER" git -C "$APP_DIR" checkout "$REPO_BRANCH"
+  sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only origin "$REPO_BRANCH"
+else
+  sudo -u "$APP_USER" git clone --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
+fi
+
+step "Create Python virtual environment"
+if [[ ! -d "$APP_DIR/.venv" ]]; then
+  sudo -u "$APP_USER" python3 -m venv "$APP_DIR/.venv"
+fi
+
+step "Install Python dependencies"
+"$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
+"$APP_DIR/.venv/bin/pip" install \
+  requests \
+  pyyaml \
+  websocket-client \
+  "eth-hash[pycryptodome]" \
+  pycryptodome
+
+# Some upstream packages have different pip names across mirrors/versions.
+if ! "$APP_DIR/.venv/bin/pip" install py-clob-client; then
+  "$APP_DIR/.venv/bin/pip" install py_clob_client
+fi
+if ! "$APP_DIR/.venv/bin/pip" install py-order-utils; then
+  "$APP_DIR/.venv/bin/pip" install py_order_utils
+fi
+if ! "$APP_DIR/.venv/bin/pip" install poly-eip712-structs; then
+  "$APP_DIR/.venv/bin/pip" install poly_eip712_structs
+fi
+
+step "Sanity check core imports"
+"$APP_DIR/.venv/bin/python" - <<'PY'
+import requests, yaml, websocket
+from py_clob_client.client import ClobClient
+print("[OK] Python deps are importable")
+PY
+
+step "Prepare runtime config files"
+cat > "$PANEL_ENV_FILE" <<EOF
+POLY_APP_ROOT=$APP_DIR
+POLY_INSTANCE_ROOT=$APP_DIR
+POLY_FORCE_SOURCE_SERVICES=1
+
+POLY_PANEL_HOST=127.0.0.1
+POLY_PANEL_PORT=$PANEL_PORT
+
+POLY_AUTH_REQUIRED=1
+POLY_AUTH_DEFAULT_USERNAME=admin
+POLY_AUTH_DEFAULT_PASSWORD=admin
+POLY_SESSION_SECRET=$(openssl rand -hex 32)
+
+# If nginx serves HTTPS, set to: https
+# POLY_REVERSE_PROXY_MODE=https
+
+PYTHONUTF8=1
+PYTHONIOENCODING=utf-8
+EOF
+
+# Trading env is reserved for optional future env vars.
+cat > "$TRADING_ENV_FILE" <<'EOF'
+# Optional overrides for trading workers.
+# Example:
+# HTTP_PROXY=http://127.0.0.1:7890
+# HTTPS_PROXY=http://127.0.0.1:7890
+EOF
+
+chmod 640 "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
+chown root:"$APP_USER" "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
+
+step "Initialize account.json template"
+if [[ -f "$APP_DIR/$V2_DIR_REL/account.template.json" && ! -f "$APP_DIR/$V2_DIR_REL/account.json" ]]; then
+  cp "$APP_DIR/$V2_DIR_REL/account.template.json" "$APP_DIR/$V2_DIR_REL/account.json"
+  chown "$APP_USER:$APP_USER" "$APP_DIR/$V2_DIR_REL/account.json"
+fi
+
+step "Reset panel auth state (force first-login password change)"
+rm -f "$APP_DIR/panel/auth.json" || true
+
+step "Create systemd services"
+cat > "$PANEL_SERVICE" <<EOF
+[Unit]
+Description=Polymarket Panel Backend
+After=network.target
+
+[Service]
+Type=simple
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR/$PANEL_DIR_REL
+ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python server.py --host 127.0.0.1 --port $PANEL_PORT'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$COPYTRADE_SERVICE" <<EOF
+[Unit]
+Description=Polymaker Copytrade V2
+After=network.target
+
+[Service]
+Type=simple
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR/$V2_DIR_REL/copytrade
+ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$AUTORUN_SERVICE" <<EOF
+[Unit]
+Description=Polymaker Autorun V2
+After=network.target
+
+[Service]
+Type=simple
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO
+ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$V3MULTI_SERVICE" <<EOF
+[Unit]
+Description=Polymaker SmartMoney V3 Multi
+After=network.target
+
+[Service]
+Type=simple
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR/$V3_DIR_REL
+ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+step "Enable panel service"
+systemctl daemon-reload
+systemctl enable --now polymarket-panel.service
+
+# Trading services are installed but not auto-enabled by default.
+# Use the panel buttons (recommended) or manually enable:
+#   systemctl enable --now polymaker-copytrade.service
+#   systemctl enable --now polymaker-autorun.service
+#   systemctl enable --now copytrade-v3-multi.service
+
+if [[ "$ENABLE_NGINX" == "1" ]]; then
+  step "Configure nginx reverse proxy"
+  cat > "$NGINX_SITE" <<EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    client_max_body_size 20m;
+
+    location / {
+        proxy_pass http://127.0.0.1:$PANEL_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+  rm -f /etc/nginx/sites-enabled/default
+  ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/polymarket-panel.conf
+  nginx -t
+  systemctl enable --now nginx
+  systemctl restart nginx
+fi
+
+step "Deployment completed"
+SERVER_IP="$(hostname -I | awk '{print $1}')"
+if [[ "$ENABLE_NGINX" == "1" ]]; then
+  PANEL_URL="http://$SERVER_IP/"
+else
+  PANEL_URL="http://$SERVER_IP:$PANEL_PORT/"
+fi
+
+cat <<EOF
+
+[OK] Polymarket panel is deployed.
+
+Access URL:
+  $PANEL_URL
+
+First login:
+  username: admin
+  password: admin
+
+After login:
+  1) You will be forced to change admin password.
+  2) Go to Account Settings and fill your wallet/private key config.
+  3) Save settings.
+  4) Start services from panel (copytrade / autorun) as needed.
+
+Useful commands:
+  systemctl status polymarket-panel --no-pager -l
+  journalctl -u polymarket-panel -f
+  systemctl status polymaker-copytrade --no-pager -l
+  systemctl status polymaker-autorun --no-pager -l
+
+EOF
