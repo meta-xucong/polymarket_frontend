@@ -1,4 +1,4 @@
-"""
+﻿"""
 poly_maker_autorun
 -------------------
 
@@ -306,6 +306,7 @@ EXIT_ORDERBOOK_MISSING_BACKOFF_SCHEDULE_SEC = (5 * 60.0, 15 * 60.0, 30 * 60.0)
 POSITION_TRUTH_FALLBACK_MIN_ORDER_SIZE = 0.5
 EXIT_CLEANUP_MAX_RETRIES = 3
 STOPLOSS_NOFILL_SELL_ONLY_MAX_REQUEUES = 3
+POSITION_RECONCILE_MAX_REQUEUES = 3
 SELL_SIGNAL_FORCE_CLEANUP_TIMEOUT_SEC = 45.0
 ALLOWED_IOC_EXIT_REASONS = {"COPYTRADE_SELL", "STOPLOSS_REENTRY"}
 ALLOWED_EXIT_SIGNAL_REASONS = ALLOWED_IOC_EXIT_REASONS | {"TOTAL_LIQUIDATION"}
@@ -328,23 +329,23 @@ class _TeeStream:
         self._secondary = secondary
         self._lock = threading.Lock()
 
-    @staticmethod
-    def _safe_stream_write(stream: Any, data: str) -> int:
-        try:
-            return int(stream.write(data))
-        except UnicodeEncodeError:
-            encoding = str(getattr(stream, "encoding", "") or "utf-8")
-            safe_data = data.encode(encoding, errors="replace").decode(
-                encoding, errors="replace"
-            )
-            return int(stream.write(safe_data))
-
     def write(self, data: str) -> int:
         with self._lock:
-            written = self._safe_stream_write(self._primary, data)
-            self._safe_stream_write(self._secondary, data)
+            written = self._safe_write(self._primary, data)
+            self._safe_write(self._secondary, data)
             self._secondary.flush()
             return written
+
+    @staticmethod
+    def _safe_write(stream: Any, data: str) -> int:
+        try:
+            return stream.write(data)
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            normalized = data.encode(encoding, errors="replace").decode(
+                encoding, errors="replace"
+            )
+            return stream.write(normalized)
 
     def flush(self) -> None:
         with self._lock:
@@ -2517,6 +2518,7 @@ class AutoRunManager:
         self._stoploss_reentry_states: Dict[str, Dict[str, Any]] = {}
         self._stoploss_quote_cycle_cache: Dict[str, Dict[str, Any]] = {}
         self._load_stoploss_reentry_states()
+        self._reconcile_strategy_freeze_on_startup()
         
         if MARKET_STATE_CHECKER_AVAILABLE:
             try:
@@ -2630,6 +2632,23 @@ class AutoRunManager:
             )
         except (TypeError, ValueError):
             stoploss_position_opened_ts = 0.0
+        strategy_freeze_state = str(raw.get("strategy_freeze_state") or "none").strip().lower()
+        if strategy_freeze_state not in {
+            "none",
+            "sell_abandoned_frozen",
+            "stoploss_frozen",
+        }:
+            strategy_freeze_state = "none"
+        try:
+            strategy_freeze_since_ts = max(
+                0.0, float(raw.get("strategy_freeze_since_ts", 0.0) or 0.0)
+            )
+        except (TypeError, ValueError):
+            strategy_freeze_since_ts = 0.0
+        strategy_freeze_reason = str(raw.get("strategy_freeze_reason") or "").strip()
+        if strategy_freeze_state == "none":
+            strategy_freeze_since_ts = 0.0
+            strategy_freeze_reason = ""
         normalized = {
             "cycle_round": cycle_round,
             "next_buy_allowed_ts": next_buy_allowed_ts,
@@ -2645,6 +2664,9 @@ class AutoRunManager:
             "stoploss_confirm_hits": stoploss_confirm_hits,
             "stoploss_last_action_ts": stoploss_last_action_ts,
             "stoploss_position_opened_ts": stoploss_position_opened_ts,
+            "strategy_freeze_state": strategy_freeze_state,
+            "strategy_freeze_since_ts": strategy_freeze_since_ts,
+            "strategy_freeze_reason": strategy_freeze_reason,
         }
         if next_drop_pct is not None:
             normalized["next_drop_pct"] = next_drop_pct
@@ -7237,58 +7259,36 @@ class AutoRunManager:
             }
             self._ws_cache_dirty = False
             self._ws_cache_last_flush = now
-        tmp_path: Path | None = None
         try:
             self._ws_cache_path.parent.mkdir(parents=True, exist_ok=True)
 
             lock_path = self._ws_cache_path.with_suffix('.lock')
             with lock_path.open("w", encoding="utf-8") as lock_file:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                # 使用进程唯一临时文件，避免多实例竞争固定 ws_cache.tmp
-                fd, tmp_raw = tempfile.mkstemp(
-                    dir=str(self._ws_cache_path.parent),
-                    prefix=f"{self._ws_cache_path.stem}_",
-                    suffix=".tmp",
-                )
-                tmp_path = Path(tmp_raw)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                # 使用原子写入：先写临时文件，再重命名
+                tmp_path = self._ws_cache_path.with_suffix('.tmp')
+                with tmp_path.open("w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
                 # 原子操作：重命名（在 Unix 系统上是原子的）
-                os.replace(tmp_path, self._ws_cache_path)
-                tmp_path = None
+                tmp_path.replace(self._ws_cache_path)
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
         except OSError as exc:
-            # 写盘失败后恢复 dirty 标记，下一轮继续重试，避免丢失缓存更新
-            with self._ws_cache_lock:
-                self._ws_cache_dirty = True
-
-            now = time.time()
-            last_ts = float(getattr(self, "_ws_cache_write_error_ts", 0.0))
-            burst = int(getattr(self, "_ws_cache_write_error_burst", 0))
-            if now - last_ts >= 5.0:
-                if burst > 0:
-                    print(f"[WARN] WS 聚合缓存写入失败已抑制 {burst} 次")
-                print(f"[ERROR] 写入 WS 聚合缓存失败: {exc}")
-                _log_error("WS_CACHE_WRITE_ERROR", {
-                    "message": "写入 WS 聚合缓存失败",
-                    "error": str(exc),
-                    "cache_path": str(self._ws_cache_path),
-                    "tokens_count": len(self._ws_cache)
-                })
-                self._ws_cache_write_error_ts = now
-                self._ws_cache_write_error_burst = 0
-            else:
-                self._ws_cache_write_error_burst = burst + 1
-
-            # 清理失败的临时文件
-            if tmp_path is not None:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
+            print(f"[ERROR] 写入 WS 聚合缓存失败: {exc}")
+            _log_error("WS_CACHE_WRITE_ERROR", {
+                "message": "写入 WS 聚合缓存失败",
+                "error": str(exc),
+                "cache_path": str(self._ws_cache_path),
+                "tokens_count": len(self._ws_cache)
+            })
+            # 清理临时文件
+            try:
+                tmp_path = self._ws_cache_path.with_suffix('.tmp')
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
 
     def _health_check(self) -> None:
         """
@@ -8684,6 +8684,20 @@ class AutoRunManager:
             merged["resume_state"] = resume_state
             refill_retry_count = topic_info.get("refill_retry_count", 0)
             merged["refill_retry_count"] = refill_retry_count
+        if isinstance(resume_state, dict) and bool(resume_state.get("has_position")):
+            merged["position_truth_context"] = {
+                "source": "autorun_resume_state",
+                "queue_role": queue_role,
+                "expected_position_size": _coerce_float(resume_state.get("position_size")),
+                "skip_buy": bool(resume_state.get("skip_buy")),
+            }
+        if (
+            queue_role in {"startup_reconcile_position", "refill_with_position"}
+            and isinstance(resume_state, dict)
+            and bool(resume_state.get("has_position"))
+        ):
+            merged["force_sell_only_on_startup"] = True
+            merged.setdefault("force_sell_only_reason", "position resume")
         if topic_info.get("force_sell_only_on_startup"):
             merged["force_sell_only_on_startup"] = True
         if topic_info.get("force_sell_only_reason"):
@@ -11354,6 +11368,7 @@ class AutoRunManager:
                 "resume_profit_pct",
                 "startup_orphan_profit_sweep",
                 "startup_skip_if_open_sell",
+                "startup_reconcile_requeue_count",
                 "stoploss_reentry_resume",
                 "orphaned",
                 "orphaned_at",
@@ -12560,6 +12575,25 @@ class AutoRunManager:
             )
             if tracked:
                 continue
+            freeze_state = self._get_strategy_freeze_state(token_id)
+            if freeze_state != "none":
+                delay = self._orphan_probe_delay_sec(max(1, attempts + 1))
+                self._append_orphan_token_record(
+                    {
+                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+                        "updated_ts": float(now),
+                        "token_id": token_id,
+                        "status": "probe_failed",
+                        # 保持 attempts 不递增，避免主动冻结误触发 manual_only 终止。
+                        "probe_attempts": int(attempts),
+                        "next_probe_at": float(now + delay),
+                        "reason": str(state.get("reason") or ""),
+                        "trigger_source": "orphan_recovery_probe",
+                        "note": f"strategy_frozen:{freeze_state}",
+                    }
+                )
+                failed += 1
+                continue
             if token_id not in copytrade_active:
                 reason = "copytrade_not_active"
             elif token_id in sell_signals:
@@ -13425,11 +13459,6 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="append",
         help="启动后自动执行的命令（可多次提供），例如 list 或 stop <topic_id>",
     )
-    parser.add_argument(
-        "--supervised-worker",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
     return parser.parse_args(argv)
 
 
@@ -13448,7 +13477,8 @@ def load_configs(
     )
 
 
-def _run_manager(args: argparse.Namespace) -> None:
+def main(argv: Optional[List[str]] = None) -> None:
+    args = parse_args(argv)
     global_conf, strategy_conf, run_params_template = load_configs(args)
     log_path = _setup_main_log(global_conf.log_dir)
     print("=" * 60)
@@ -13484,149 +13514,6 @@ def _run_manager(args: argparse.Namespace) -> None:
         manager.command_loop()
 
     worker.join()
-
-
-def _should_enable_local_supervisor(args: argparse.Namespace) -> bool:
-    if bool(getattr(args, "supervised_worker", False)):
-        return False
-    if not bool(getattr(args, "no_repl", False)):
-        return False
-    return str(os.getenv("POLY_LOCAL_SUPERVISOR") or "1").strip() != "0"
-
-
-def _build_supervised_worker_argv(argv: Optional[List[str]]) -> List[str]:
-    raw = list(argv) if argv is not None else list(sys.argv[1:])
-    filtered = [item for item in raw if item != "--supervised-worker"]
-    filtered.append("--supervised-worker")
-    return filtered
-
-
-def _cleanup_orphan_strategy_processes() -> None:
-    """Best-effort cleanup for detached Volatility_arbitrage_run workers."""
-    strategy_script = str(MAKER_ROOT / "Volatility_arbitrage_run.py").lower()
-    app_root_hint = str(PROJECT_ROOT).lower()
-    current_pid = os.getpid()
-
-    if os.name != "nt":
-        return
-
-    try:
-        probe = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*Volatility_arbitrage_run.py*' } | "
-                    "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        raw = (probe.stdout or "").strip()
-        if not raw or raw in {"null", "[]"}:
-            return
-        parsed = json.loads(raw)
-        items = parsed if isinstance(parsed, list) else [parsed]
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            try:
-                pid = int(item.get("ProcessId") or 0)
-            except (TypeError, ValueError):
-                continue
-            if pid <= 0 or pid == current_pid:
-                continue
-            cmdline = str(item.get("CommandLine") or "").lower()
-            if strategy_script not in cmdline:
-                continue
-            if app_root_hint not in cmdline:
-                continue
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            print(f"[SUPERVISOR] cleaned orphan strategy process pid={pid}")
-    except Exception as exc:
-        print(f"[SUPERVISOR][WARN] orphan cleanup failed: {exc}")
-
-
-def _run_with_local_supervisor(args: argparse.Namespace, argv: Optional[List[str]]) -> None:
-    worker_argv = _build_supervised_worker_argv(argv)
-    script_path = Path(__file__).resolve()
-    stop_file = str(os.getenv("POLY_PANEL_STOP_FILE") or "").strip()
-    restart_delay = 2.0
-    max_restart_delay = 30.0
-    restart_count = 0
-
-    print(
-        "[SUPERVISOR] local restart guard enabled "
-        f"(mode=no-repl, stop_file={'set' if stop_file else 'unset'})"
-    )
-
-    while True:
-        _cleanup_orphan_strategy_processes()
-
-        if stop_file and Path(stop_file).exists():
-            print("[SUPERVISOR] stop file detected before worker start, exiting supervisor")
-            return
-
-        cmd = [sys.executable, str(script_path), *worker_argv]
-        start_ts = time.time()
-        proc = subprocess.Popen(cmd, cwd=str(script_path.parent))
-
-        while proc.poll() is None:
-            if stop_file and Path(stop_file).exists():
-                print("[SUPERVISOR] stop file detected, terminating worker gracefully")
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                try:
-                    proc.wait(timeout=10)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                # Even on graceful stop, worker may leave detached strategy children.
-                # Clean them before supervisor exits to avoid orphan background traders.
-                _cleanup_orphan_strategy_processes()
-                return
-            time.sleep(1.0)
-
-        return_code = int(proc.returncode or 0)
-        uptime_sec = max(0.0, time.time() - start_ts)
-
-        if return_code == 0:
-            _cleanup_orphan_strategy_processes()
-            print(f"[SUPERVISOR] worker exited normally (uptime={uptime_sec:.1f}s), no restart needed")
-            return
-
-        restart_count += 1
-        _cleanup_orphan_strategy_processes()
-        print(
-            f"[SUPERVISOR][WARN] worker exited abnormally (code={return_code}, uptime={uptime_sec:.1f}s), "
-            f"restart #{restart_count} in {restart_delay:.1f}s"
-        )
-        time.sleep(restart_delay)
-        if uptime_sec < 10.0:
-            restart_delay = min(max_restart_delay, restart_delay * 2.0)
-        else:
-            restart_delay = 2.0
-
-
-def main(argv: Optional[List[str]] = None) -> None:
-    args = parse_args(argv)
-    if _should_enable_local_supervisor(args):
-        _run_with_local_supervisor(args, argv)
-        return
-    _run_manager(args)
 
 
 if __name__ == "__main__":

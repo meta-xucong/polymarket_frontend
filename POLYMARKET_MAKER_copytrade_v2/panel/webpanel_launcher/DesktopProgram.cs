@@ -10,7 +10,7 @@ namespace PolymarketDesktopLauncher
         private static void Main()
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            string runtimeExe = Path.Combine(baseDir, "desktop_runtime", "PolymarketDesktop.exe");
+            string runtimeExe = Path.Combine(baseDir, "desktop_runtime", "PolymarketDesktopRuntime.exe");
             if (!File.Exists(runtimeExe))
             {
                 return;

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Polymarket Control Panel</title>
-  <link rel="stylesheet" href="/styles.css?v=20260324-minimal1">
+  <link rel="stylesheet" href="/styles.css?v=20260321-auth1">
 </head>
 <body>
   <div id="auth-gate" class="auth-gate hidden">
@@ -97,12 +97,16 @@
             <h2>Account Settings</h2>
             <span class="muted">account.json</span>
           </div>
-          <form id="account-form" class="form-grid compact-form">
+          <form id="account-form" class="form-grid">
             <label><span class="field-label">Host</span><input name="POLY_HOST" required></label>
             <label><span class="field-label">Chain ID</span><input name="POLY_CHAIN_ID" type="number" required></label>
             <label><span class="field-label">Signature Type</span><input name="POLY_SIGNATURE" type="number" required></label>
             <label><span class="field-label">Funder Address</span><input name="POLY_FUNDER" required></label>
             <label class="full"><span class="field-label">Private Key</span><input name="POLY_KEY" type="password" required></label>
+            <label><span class="field-label">API Key</span><input name="POLY_API_KEY"></label>
+            <label><span class="field-label">API Secret</span><input name="POLY_API_SECRET" type="password"></label>
+            <label><span class="field-label">API Passphrase</span><input name="POLY_API_PASSPHRASE" type="password"></label>
+            <label class="full"><span class="field-label">Data API Address</span><input name="POLY_DATA_ADDRESS"></label>
             <div class="full submit-row">
               <button type="submit">Save account settings</button>
             </div>
@@ -119,11 +123,15 @@
             <span class="muted">Mapped to existing config files</span>
           </div>
           <form id="settings-form" class="stack">
-            <div class="subgrid compact-grid">
+            <div class="subgrid">
               <label><span class="field-label">Target Addresses</span><textarea name="target_addresses" rows="3" placeholder="One address per line"></textarea></label>
               <label><span class="field-label">Poll Interval (sec)</span><input name="poll_interval_sec" type="number" step="1"></label>
               <label><span class="field-label">Minimum Size</span><input name="min_size" type="number" step="0.1"></label>
+            </div>
+            <div class="subgrid">
               <label><span class="field-label">Max Concurrent Tasks</span><input name="max_concurrent_tasks" type="number" step="1"></label>
+              <label><span class="field-label">Copytrade Poll (sec)</span><input name="copytrade_poll_seconds" type="number" step="1"></label>
+              <label><span class="field-label">Command Poll (sec)</span><input name="command_poll_seconds" type="number" step="1"></label>
               <label>
                 <span class="field-label">Strategy Mode</span>
                 <select name="strategy_mode">
@@ -131,39 +139,30 @@
                   <option value="aggressive">aggressive</option>
                 </select>
               </label>
-              <label><span class="field-label">Order Size</span><input name="order_size" type="number" step="0.1"></label>
-              <label><span class="field-label">Profit Target (%)</span><input name="profit_pct" type="number" step="0.0001"></label>
+              <label><span class="field-label">Burst Slots</span><input name="burst_slots" type="number" step="1"></label>
             </div>
-
-            <details class="advanced-box">
-              <summary>Advanced Settings</summary>
-              <div class="advanced-grid">
-                <p class="advanced-note">Secondary runtime tuning stays here so the main page only shows the parameters you adjust most often.</p>
-                <div class="subgrid">
-                  <label><span class="field-label">Copytrade Poll (sec)</span><input name="copytrade_poll_seconds" type="number" step="1"></label>
-                  <label><span class="field-label">Command Poll (sec)</span><input name="command_poll_seconds" type="number" step="1"></label>
-                  <label><span class="field-label">Burst Slots</span><input name="burst_slots" type="number" step="1"></label>
-                  <label><span class="field-label">Max Position / Market</span><input name="max_position_per_market" type="number" step="0.1"></label>
-                  <label><span class="field-label">Drop Threshold (%)</span><input name="drop_pct" type="number" step="0.0001"></label>
-                  <label>
-                    <span class="field-label">Sell Mode</span>
-                    <select name="sell_mode">
-                      <option value="aggressive">aggressive</option>
-                      <option value="conservative">conservative</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span class="field-label">Shock Guard</span>
-                    <select name="shock_guard_enabled">
-                      <option value="true">true</option>
-                      <option value="false">false</option>
-                    </select>
-                  </label>
-                  <label><span class="field-label">Shock Window (sec)</span><input name="shock_window_sec" type="number" step="1"></label>
-                  <label><span class="field-label">Shock Drop (%)</span><input name="shock_drop_pct" type="number" step="0.0001"></label>
-                </div>
-              </div>
-            </details>
+            <div class="subgrid">
+              <label><span class="field-label">Order Size</span><input name="order_size" type="number" step="0.1"></label>
+              <label><span class="field-label">Max Position / Market</span><input name="max_position_per_market" type="number" step="0.1"></label>
+              <label><span class="field-label">Drop Threshold (%)</span><input name="drop_pct" type="number" step="0.0001"></label>
+              <label><span class="field-label">Profit Target (%)</span><input name="profit_pct" type="number" step="0.0001"></label>
+              <label>
+                <span class="field-label">Sell Mode</span>
+                <select name="sell_mode">
+                  <option value="aggressive">aggressive</option>
+                  <option value="conservative">conservative</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Shock Guard</span>
+                <select name="shock_guard_enabled">
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+              </label>
+              <label><span class="field-label">Shock Window (sec)</span><input name="shock_window_sec" type="number" step="1"></label>
+              <label><span class="field-label">Shock Drop (%)</span><input name="shock_drop_pct" type="number" step="0.0001"></label>
+            </div>
             <div class="submit-row">
               <button type="submit">Save core parameters</button>
             </div>
@@ -343,6 +342,6 @@
   </main>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/app.js?v=20260324-minimal1"></script>
+  <script src="/app.js?v=20260321-auth1"></script>
 </body>
 </html>

@@ -8,6 +8,7 @@ import time
 import webbrowser
 
 from runtime_paths import resolve_desktop_bin_dir, resolve_repo_root
+from server import create_http_server
 
 
 def _find_port(preferred_port: int = 8787, max_attempts: int = 20) -> int:
@@ -23,14 +24,10 @@ def _find_port(preferred_port: int = 8787, max_attempts: int = 20) -> int:
 
 
 def _start_panel_server() -> tuple[object, str]:
-    repo_root = resolve_repo_root()
-    os.environ.setdefault("POLY_APP_ROOT", str(repo_root))
-    os.environ.setdefault("POLY_INSTANCE_ROOT", str(repo_root))
+    os.environ.setdefault("POLY_APP_ROOT", str(resolve_repo_root()))
     bin_dir = resolve_desktop_bin_dir()
     if bin_dir:
         os.environ.setdefault("POLY_DESKTOP_BIN_DIR", str(bin_dir))
-
-    from server import create_http_server
 
     port = _find_port()
     server = create_http_server("127.0.0.1", port)

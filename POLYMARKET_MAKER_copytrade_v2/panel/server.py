@@ -68,11 +68,7 @@ SERVICE_DEFS: Dict[str, Dict[str, str]] = {
 }
 
 LOCAL_SERVICE_SPECS: Dict[str, Dict[str, Any]] = {}
-LOCAL_SERVICE_DESIRED: Dict[str, bool] = {key: False for key in SERVICE_DEFS}
-LOCAL_SERVICE_RESTART_AFTER: Dict[str, float] = {key: 0.0 for key in SERVICE_DEFS}
-LOCAL_SERVICE_LAST_EXIT: Dict[str, str] = {key: "" for key in SERVICE_DEFS}
-LOCAL_SERVICE_SUPERVISOR_LOCK = threading.RLock()
-LOCAL_SERVICE_SUPERVISOR_STARTED = False
+SERVICE_ACTION_LOCKS: Dict[str, threading.Lock] = {}
 SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 SESSION_COOKIE_NAME = "poly_panel_session"
 SESSION_TTL_SEC = int(str(os.getenv("POLY_SESSION_TTL_SEC") or "43200"))
@@ -82,8 +78,6 @@ DEFAULT_AUTH_USERNAME = str(os.getenv("POLY_AUTH_DEFAULT_USERNAME") or "admin").
 DEFAULT_AUTH_PASSWORD = str(os.getenv("POLY_AUTH_DEFAULT_PASSWORD") or "admin").strip() or "admin"
 AUTH_ITERATIONS = int(str(os.getenv("POLY_AUTH_PBKDF2_ITERATIONS") or "390000"))
 AUTH_STATE_PATH = INSTANCE_ROOT / "panel" / "auth.json"
-LOCAL_SERVICE_RESTART_SEC = max(1.0, float(str(os.getenv("POLY_LOCAL_SERVICE_RESTART_SEC") or "10")))
-LOCAL_SERVICE_MONITOR_SEC = max(1.0, float(str(os.getenv("POLY_LOCAL_SERVICE_MONITOR_SEC") or "2")))
 if not SESSION_SECRET:
     SESSION_SECRET = secrets.token_urlsafe(32)
 
@@ -307,7 +301,9 @@ def _resolve_local_service_specs() -> Dict[str, Dict[str, Any]]:
         return LOCAL_SERVICE_SPECS
 
     python_cmd = _resolve_python_command()
-    force_source = os.getenv("POLY_FORCE_SOURCE_SERVICES") == "1"
+    # Windows packaged executables are less stable for long-running strategy workers;
+    # default to source-mode unless explicitly disabled.
+    force_source = str(os.getenv("POLY_FORCE_SOURCE_SERVICES") or "1").strip() == "1"
     frozen_runtime = bool(getattr(sys, "frozen", False))
     bin_dir = resolve_desktop_bin_dir()
     v2_root = resolve_v2_root()
@@ -482,12 +478,8 @@ def _local_service_status() -> Dict[str, Any]:
     for key, meta in SERVICE_DEFS.items():
         pid = _read_pid(key)
         active = _pid_exists(pid)
-        desired = bool(LOCAL_SERVICE_DESIRED.get(key))
         if pid and not active:
             _clear_pid(key)
-        elif active and not desired:
-            LOCAL_SERVICE_DESIRED[key] = True
-            desired = True
         services[key] = {
             "service": key,
             "label": meta["label"],
@@ -495,9 +487,6 @@ def _local_service_status() -> Dict[str, Any]:
             "raw": "active" if active else "inactive",
             "pid": pid if active else None,
             "mode": "local-process",
-            "desired": desired,
-            "restart_pending": bool(desired and not active),
-            "last_exit": str(LOCAL_SERVICE_LAST_EXIT.get(key) or ""),
         }
     return {
         "supported": True,
@@ -507,94 +496,75 @@ def _local_service_status() -> Dict[str, Any]:
     }
 
 
-def _start_local_service(service_key: str, *, from_supervisor: bool = False) -> Dict[str, Any]:
+def _start_local_service(service_key: str) -> Dict[str, Any]:
     spec = _resolve_local_service_specs().get(service_key)
     if not spec:
         return {"ok": False, "message": f"unknown service: {service_key}"}
     if not spec.get("cmd"):
         return {"ok": False, "message": str(spec.get("error") or "service command unavailable")}
 
-    with LOCAL_SERVICE_SUPERVISOR_LOCK:
-        current_pid = _read_pid(service_key)
-        if _pid_exists(current_pid):
-            LOCAL_SERVICE_DESIRED[service_key] = True
-            LOCAL_SERVICE_RESTART_AFTER[service_key] = 0.0
-            return {"ok": True, "message": "already running", "pid": current_pid}
+    current_pid = _read_pid(service_key)
+    if _pid_exists(current_pid):
+        return {"ok": True, "message": "already running", "pid": current_pid}
 
-        _clear_stop_file(service_key)
-        spec["log"].parent.mkdir(parents=True, exist_ok=True)
-        log_handle = open(spec["log"], "a", encoding="utf-8")
-        creationflags = 0
-        kwargs: Dict[str, Any] = {}
-        child_env = os.environ.copy()
-        child_env["POLY_PANEL_STOP_FILE"] = str(_stop_file(service_key))
-        child_env.setdefault("POLY_APP_ROOT", str(SOURCE_ROOT))
-        child_env.setdefault("POLY_INSTANCE_ROOT", str(INSTANCE_ROOT))
-        for env_key, env_value in get_account_payload().items():
-            text = str(env_value or "").strip()
-            if text:
-                child_env[env_key] = text
-        if os.name == "nt":
-            creationflags = (
-                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                | getattr(subprocess, "DETACHED_PROCESS", 0)
-                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            )
-            kwargs["close_fds"] = True
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0
-            kwargs["startupinfo"] = startupinfo
-        else:
-            kwargs["start_new_session"] = True
+    _clear_stop_file(service_key)
+    spec["log"].parent.mkdir(parents=True, exist_ok=True)
+    log_handle = open(spec["log"], "a", encoding="utf-8")
+    creationflags = 0
+    kwargs: Dict[str, Any] = {}
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONUTF8", "1")
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env["POLY_PANEL_STOP_FILE"] = str(_stop_file(service_key))
+    child_env.setdefault("POLY_APP_ROOT", str(SOURCE_ROOT))
+    child_env.setdefault("POLY_INSTANCE_ROOT", str(INSTANCE_ROOT))
+    for env_key, env_value in get_account_payload().items():
+        text = str(env_value or "").strip()
+        if text:
+            child_env[env_key] = text
+    if os.name == "nt":
+        creationflags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        kwargs["close_fds"] = True
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    else:
+        kwargs["start_new_session"] = True
 
-        try:
-            proc = subprocess.Popen(
-                spec["cmd"],
-                cwd=str(spec["cwd"]),
-                stdout=log_handle,
-                stderr=log_handle,
-                env=child_env,
-                creationflags=creationflags,
-                **kwargs,
-            )
-        except Exception as exc:
-            log_handle.close()
-            if from_supervisor:
-                LOCAL_SERVICE_RESTART_AFTER[service_key] = _now() + LOCAL_SERVICE_RESTART_SEC
-            return {"ok": False, "message": str(exc)}
-
+    try:
+        proc = subprocess.Popen(
+            spec["cmd"],
+            cwd=str(spec["cwd"]),
+            stdout=log_handle,
+            stderr=log_handle,
+            env=child_env,
+            creationflags=creationflags,
+            **kwargs,
+        )
+    except Exception as exc:
         log_handle.close()
-        _write_pid(service_key, proc.pid)
-        LOCAL_SERVICE_DESIRED[service_key] = True
-        LOCAL_SERVICE_RESTART_AFTER[service_key] = 0.0
-        LOCAL_SERVICE_LAST_EXIT[service_key] = ""
+        return {"ok": False, "message": str(exc)}
 
+    log_handle.close()
+    _write_pid(service_key, proc.pid)
     time.sleep(1.0)
     if not _pid_exists(proc.pid):
-        with LOCAL_SERVICE_SUPERVISOR_LOCK:
-            _clear_pid(service_key)
-            _clear_stop_file(service_key)
-            if LOCAL_SERVICE_DESIRED.get(service_key):
-                LOCAL_SERVICE_RESTART_AFTER[service_key] = _now() + LOCAL_SERVICE_RESTART_SEC
-                LOCAL_SERVICE_LAST_EXIT[service_key] = "process exited immediately"
+        _clear_pid(service_key)
+        _clear_stop_file(service_key)
         log_excerpt = _tail_log(spec["log"])
         message = "process exited immediately"
         if log_excerpt:
             message += f"\n{log_excerpt}"
         return {"ok": False, "message": message}
-    return {
-        "ok": True,
-        "message": "restarted" if from_supervisor else "started",
-        "pid": proc.pid,
-    }
+    return {"ok": True, "message": "started", "pid": proc.pid}
 
 
 def _stop_local_service(service_key: str) -> Dict[str, Any]:
-    with LOCAL_SERVICE_SUPERVISOR_LOCK:
-        LOCAL_SERVICE_DESIRED[service_key] = False
-        LOCAL_SERVICE_RESTART_AFTER[service_key] = 0.0
-        LOCAL_SERVICE_LAST_EXIT[service_key] = ""
     pid = _read_pid(service_key)
     if not _pid_exists(pid):
         _clear_pid(service_key)
@@ -630,52 +600,6 @@ def _stop_local_service(service_key: str) -> Dict[str, Any]:
     return {"ok": True, "message": "stopped", "pid": pid}
 
 
-def _supervise_local_services_loop() -> None:
-    while True:
-        time.sleep(LOCAL_SERVICE_MONITOR_SEC)
-        try:
-            if shutil.which("systemctl") is not None:
-                continue
-            for service_key in SERVICE_DEFS:
-                with LOCAL_SERVICE_SUPERVISOR_LOCK:
-                    desired = bool(LOCAL_SERVICE_DESIRED.get(service_key))
-                    restart_after = float(LOCAL_SERVICE_RESTART_AFTER.get(service_key) or 0.0)
-                if not desired:
-                    continue
-                pid = _read_pid(service_key)
-                if _pid_exists(pid):
-                    continue
-                if pid:
-                    _clear_pid(service_key)
-                if restart_after and _now() < restart_after:
-                    continue
-                result = _start_local_service(service_key, from_supervisor=True)
-                if not result.get("ok"):
-                    with LOCAL_SERVICE_SUPERVISOR_LOCK:
-                        LOCAL_SERVICE_LAST_EXIT[service_key] = str(result.get("message") or "restart failed")
-                        LOCAL_SERVICE_RESTART_AFTER[service_key] = _now() + LOCAL_SERVICE_RESTART_SEC
-        except Exception:
-            continue
-
-
-def _ensure_local_service_supervisor() -> None:
-    global LOCAL_SERVICE_SUPERVISOR_STARTED
-    with LOCAL_SERVICE_SUPERVISOR_LOCK:
-        if LOCAL_SERVICE_SUPERVISOR_STARTED:
-            return
-        for service_key in SERVICE_DEFS:
-            pid = _read_pid(service_key)
-            if _pid_exists(pid):
-                LOCAL_SERVICE_DESIRED[service_key] = True
-        thread = threading.Thread(
-            target=_supervise_local_services_loop,
-            name="poly-local-service-supervisor",
-            daemon=True,
-        )
-        thread.start()
-        LOCAL_SERVICE_SUPERVISOR_STARTED = True
-
-
 def _service_status() -> Dict[str, Any]:
     if shutil.which("systemctl") is None:
         return _local_service_status()
@@ -709,34 +633,44 @@ def _service_action(action: str, service_key: str) -> Dict[str, Any]:
     meta = SERVICE_DEFS.get(service_key)
     if not meta:
         return {"ok": False, "message": f"unknown service: {service_key}"}
-    service_name = meta["systemd"]
 
-    if shutil.which("systemctl") is None:
-        if action == "start":
-            return _start_local_service(service_key)
-        if action == "stop":
-            return _stop_local_service(service_key)
-        if action == "restart":
-            stopped = _stop_local_service(service_key)
-            if not stopped.get("ok"):
-                return stopped
-            return _start_local_service(service_key)
-        return {"ok": False, "message": f"invalid action: {action}"}
-    exists_ok, load_state = _run_command("systemctl", "show", service_name, "--property", "LoadState", "--value")
-    if (not exists_ok) or load_state.strip() == "not-found":
-        if action == "start":
-            return _start_local_service(service_key)
-        if action == "stop":
-            return _stop_local_service(service_key)
-        if action == "restart":
-            stopped = _stop_local_service(service_key)
-            if not stopped.get("ok"):
-                return stopped
-            return _start_local_service(service_key)
-        return {"ok": False, "message": f"invalid action: {action}"}
+    lock = SERVICE_ACTION_LOCKS.setdefault(service_key, threading.Lock())
+    with lock:
+        service_name = meta["systemd"]
 
-    ok, output = _run_command("systemctl", action, service_name)
-    return {"ok": ok, "message": output or ("ok" if ok else "failed"), "service": service_name}
+        if shutil.which("systemctl") is None:
+            if action == "start":
+                return _start_local_service(service_key)
+            if action == "stop":
+                return _stop_local_service(service_key)
+            if action == "restart":
+                stopped = _stop_local_service(service_key)
+                if not stopped.get("ok"):
+                    return stopped
+                return _start_local_service(service_key)
+            return {"ok": False, "message": f"invalid action: {action}"}
+        exists_ok, load_state = _run_command(
+            "systemctl",
+            "show",
+            service_name,
+            "--property",
+            "LoadState",
+            "--value",
+        )
+        if (not exists_ok) or load_state.strip() == "not-found":
+            if action == "start":
+                return _start_local_service(service_key)
+            if action == "stop":
+                return _stop_local_service(service_key)
+            if action == "restart":
+                stopped = _stop_local_service(service_key)
+                if not stopped.get("ok"):
+                    return stopped
+                return _start_local_service(service_key)
+            return {"ok": False, "message": f"invalid action: {action}"}
+
+        ok, output = _run_command("systemctl", action, service_name)
+        return {"ok": ok, "message": output or ("ok" if ok else "failed"), "service": service_name}
 
 
 def _parse_cookie_map(raw_cookie: str) -> Dict[str, str]:
@@ -1142,7 +1076,6 @@ class PanelHandler(BaseHTTPRequestHandler):
 
 
 def create_http_server(host: str, port: int) -> ThreadingHTTPServer:
-    _ensure_local_service_supervisor()
     server = ThreadingHTTPServer((host, port), PanelHandler)
     setattr(server, "last_request_ts", _now())
     return server

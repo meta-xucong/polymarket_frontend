@@ -293,22 +293,10 @@ button.ghost.button-busy::before {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.compact-form {
-  max-width: 760px;
-}
-
 .subgrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-}
-
-.compact-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.compact-grid label:first-child {
-  grid-column: 1 / -1;
 }
 
 label {

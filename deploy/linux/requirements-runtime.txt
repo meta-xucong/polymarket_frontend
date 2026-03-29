@@ -1,6 +1,0 @@
-requests>=2.32
-PyYAML>=6.0
-websocket-client>=1.8
-py-clob-client>=0.34.6
-websockets>=16.0
-aiohttp>=3.13

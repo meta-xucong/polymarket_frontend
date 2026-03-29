@@ -1,85 +1,31 @@
-.pytest_cache/
-__pycache__/
-*.py[cod]
+﻿# Python cache/test artifacts
+**/__pycache__/
+**/.pytest_cache/
+*.pyc
+*.pyo
 
-*.log
-*.pid
-*.stop
-*.tmp
+# Runtime state/logs
+**/POLYMARKET_MAKER_AUTO/logs/
+**/POLYMARKET_MAKER_AUTO/data/
+**/copytrade/logs/
+**/copytrade/copytrade_sell_signals.json
+**/copytrade/copytrade_state.json
+**/copytrade/tokens_from_copytrade.json
+**/*_systemd.log
+**/panel/run/
+**/run/
 
+# Local secrets
+POLYMARKET_MAKER_copytrade_v2/account.json
+release/**/app_root/POLYMARKET_MAKER_copytrade_v2/account.json
+
+# Build/temp
+**/dist_closed/
+**/*.tmp
+**/*.lock
+release/**/bin/
+release/**/*.exe
+
+# OS/IDE
 .DS_Store
 Thumbs.db
-
-POLYMARKET_MAKER_copytrade_v2/panel/dist_closed/
-POLYMARKET_MAKER_copytrade_v2/panel/run/
-POLYMARKET_MAKER_copytrade_v2/panel/webpanel_launcher/bin/
-POLYMARKET_MAKER_copytrade_v2/panel/webpanel_launcher/obj/
-POLYMARKET_MAKER_copytrade_v2/copytrade/tokens_from_copytrade.json
-POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_state.json
-POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_sell_signals.json
-POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/data/*.json
-POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/**/logs/
-POLY_SMARTMONEY/copytrade_v3_muti/state_*.json
-POLY_SMARTMONEY/copytrade_v3_muti/logs/
-
-android/node_modules/
-android/android/.gradle/
-android/android/app/build/
-android/android/keystore/
-android/android/signing.properties
-
-.pytest-tmp/
-.pytest-tmp-*/
-
-PolymarketDesktop_Final_20260320.zip
-*.lnk
-release_assets/
-
-# Package a minimal closed bundle: keep only launchers, exes, bin, app_root.
-PolymarketDesktop_Final/*
-!PolymarketDesktop_Final/PolymarketDesktop.exe
-!PolymarketDesktop_Final/PolymarketWebPanel.exe
-!PolymarketDesktop_Final/LaunchDesktop.bat
-!PolymarketDesktop_Final/LaunchWebPanel.bat
-!PolymarketDesktop_Final/README.md
-!PolymarketDesktop_Final/bin/
-!PolymarketDesktop_Final/bin/**
-!PolymarketDesktop_Final/app_root/
-!PolymarketDesktop_Final/app_root/**
-
-# Exclude packaged runtime/state artifacts.
-PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/copytrade/tokens_from_copytrade.json
-PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_state.json
-PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/copytrade/copytrade_sell_signals.json
-PolymarketDesktop_Final/app_root/POLYMARKET_MAKER_copytrade_v2/POLYMARKET_MAKER_AUTO/data/*.json
-PolymarketDesktop_Final/app_root/POLY_SMARTMONEY/copytrade_v3_muti/state_*.json
-PolymarketDesktop_Final/app_root/POLY_SMARTMONEY/copytrade_v3_muti/logs/
-PolymarketDesktop_Final/app_root/**/nuitka-crash-report.xml
-PolymarketDesktop_Final/app_root/**/.panel_*
-PolymarketDesktop_Final/app_root/**/ws_cache.lock
-PolymarketDesktop_Final/app_root/**/__pycache__/
-PolymarketDesktop_Final/app_root/**/*.py[cod]
-PolymarketDesktop_Final/app_root/**/*.log
-PolymarketDesktop_Final/app_root/**/logs/**
-PolymarketDesktop_Final/app_root/**/run/**
-PolymarketDesktop_Final/**/run/*.pid
-PolymarketDesktop_Final/**/run/*.port
-
-# Ignore release runtime outputs but keep packaged content.
-release/**/stdout.txt
-release/**/stderr.txt
-release/**/logs/**
-release/**/run/**
-release/**/data/*.json
-release/**/__pycache__/
-release/**/*.py[cod]
-release/PolymarketDesktop_Clean_*.zip
-release/PolymarketWebPanel_Clean_*.zip
-release_stage/
-release_stage/**/stdout.txt
-release_stage/**/stderr.txt
-release_stage/**/logs/**
-release_stage/**/run/**
-release_stage/**/data/*.json
-release_stage/**/__pycache__/
-release_stage/**/*.py[cod]

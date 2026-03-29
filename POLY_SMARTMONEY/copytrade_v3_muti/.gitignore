@@ -1,0 +1,12 @@
+.pytest_tmp_*/
+**/.pytest_cache/
+**/__pycache__/
+POLYMARKET_MAKER_AUTO/data/*.json
+POLYMARKET_MAKER_AUTO/logs/
+copytrade/copytrade_state.json
+copytrade/manual_intervention_tokens.json
+copytrade/tokens_from_copytrade.json
+copytrade/stoploss_reentry_state.json
+copytrade/stoploss_reentry_state.bak.json
+copytrade/copytrade_sell_signals.json
+copytrade/liquidation_blacklist.json
