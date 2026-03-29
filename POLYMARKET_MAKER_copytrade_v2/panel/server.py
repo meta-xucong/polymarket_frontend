@@ -460,6 +460,59 @@ def _pid_exists(pid: int | None) -> bool:
         return False
 
 
+def _windows_process_image_name(pid: int | None) -> str:
+    if not pid or pid <= 0:
+        return ""
+    ok, output = _run_command("tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH")
+    if not ok:
+        return ""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    first = lines[0].strip().strip('"')
+    if first.startswith("INFO:"):
+        return ""
+    parts = [item.strip().strip('"') for item in lines[0].split('","')]
+    if not parts:
+        return ""
+    return str(parts[0] or "").strip().lower()
+
+
+def _service_expected_windows_images(service_key: str) -> set[str]:
+    spec = _resolve_local_service_specs().get(service_key) or {}
+    cmd = spec.get("cmd") or []
+    mode = str(spec.get("mode") or "").strip().lower()
+
+    image_names: set[str] = set()
+    if cmd:
+        cmd0 = Path(str(cmd[0])).name.strip().lower()
+        if cmd0 and "polymarketwebpanel" not in cmd0:
+            image_names.add(cmd0)
+
+    if mode != "packaged":
+        image_names.update({"python.exe", "pythonw.exe", "py.exe"})
+
+    return image_names
+
+
+def _pid_matches_service(service_key: str, pid: int | None) -> bool:
+    if not _pid_exists(pid):
+        return False
+    if os.name != "nt":
+        return True
+
+    image_name = _windows_process_image_name(pid)
+    if not image_name:
+        return False
+    if image_name.startswith("polymarketwebpanel"):
+        return False
+
+    expected = _service_expected_windows_images(service_key)
+    if not expected:
+        return True
+    return image_name in expected
+
+
 def _tail_log(path: Path, max_lines: int = 20, max_chars: int = 2000) -> str:
     if not path.exists():
         return ""
@@ -477,7 +530,7 @@ def _local_service_status() -> Dict[str, Any]:
     services: Dict[str, Any] = {}
     for key, meta in SERVICE_DEFS.items():
         pid = _read_pid(key)
-        active = _pid_exists(pid)
+        active = _pid_matches_service(key, pid)
         if pid and not active:
             _clear_pid(key)
         services[key] = {
@@ -504,8 +557,10 @@ def _start_local_service(service_key: str) -> Dict[str, Any]:
         return {"ok": False, "message": str(spec.get("error") or "service command unavailable")}
 
     current_pid = _read_pid(service_key)
-    if _pid_exists(current_pid):
+    if _pid_matches_service(service_key, current_pid):
         return {"ok": True, "message": "already running", "pid": current_pid}
+    if current_pid:
+        _clear_pid(service_key)
 
     _clear_stop_file(service_key)
     spec["log"].parent.mkdir(parents=True, exist_ok=True)
@@ -553,7 +608,7 @@ def _start_local_service(service_key: str) -> Dict[str, Any]:
     log_handle.close()
     _write_pid(service_key, proc.pid)
     time.sleep(1.0)
-    if not _pid_exists(proc.pid):
+    if not _pid_matches_service(service_key, proc.pid):
         _clear_pid(service_key)
         _clear_stop_file(service_key)
         log_excerpt = _tail_log(spec["log"])
@@ -566,7 +621,7 @@ def _start_local_service(service_key: str) -> Dict[str, Any]:
 
 def _stop_local_service(service_key: str) -> Dict[str, Any]:
     pid = _read_pid(service_key)
-    if not _pid_exists(pid):
+    if not _pid_matches_service(service_key, pid):
         _clear_pid(service_key)
         _clear_stop_file(service_key)
         return {"ok": True, "message": "already stopped"}
@@ -574,7 +629,7 @@ def _stop_local_service(service_key: str) -> Dict[str, Any]:
     stop_path = _stop_file(service_key)
     stop_path.write_text("stop\n", encoding="utf-8")
     for _ in range(100):
-        if not _pid_exists(pid):
+        if not _pid_matches_service(service_key, pid):
             _clear_pid(service_key)
             _clear_stop_file(service_key)
             return {"ok": True, "message": "stopped gracefully", "pid": pid}
@@ -591,7 +646,7 @@ def _stop_local_service(service_key: str) -> Dict[str, Any]:
         return {"ok": False, "message": str(exc)}
 
     for _ in range(20):
-        if not _pid_exists(pid):
+        if not _pid_matches_service(service_key, pid):
             break
         time.sleep(0.1)
 

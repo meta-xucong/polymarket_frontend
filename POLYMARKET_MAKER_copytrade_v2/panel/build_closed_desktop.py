@@ -97,7 +97,7 @@ def _write_launcher() -> None:
         "set POLY_DESKTOP_BIN_DIR=%~dp0bin\r\n"
         "set POLY_DESKTOP_FORCE_BROWSER=1\r\n"
         "set POLY_DESKTOP_APP_MODE=browser\r\n"
-        "start \"\" \"%~dp0PolymarketWebPanel.exe\"\r\n"
+        "\"%~dp0PolymarketWebPanel.exe\"\r\n"
     )
     (RELEASE_DIR / "LaunchWebPanel.bat").write_text(web_launcher_body, encoding="utf-8")
 
@@ -123,6 +123,13 @@ def _copy_portable_tree(src: Path, dst: Path) -> None:
         "dist_closed",
         "run",
         "logs",
+        "auth.json",
+        "stoploss_reentry_state.json",
+        "stoploss_reentry_state.bak.json",
+        "copytrade_sell_signals.json",
+        "copytrade_state.json",
+        "tokens_from_copytrade.json",
+        "cost_anchors",
     )
     if dst.exists():
         shutil.rmtree(dst)
@@ -186,7 +193,7 @@ def main() -> None:
         common
         + [
             "--onefile",
-            "--windows-console-mode=disable",
+            "--windows-console-mode=force",
             f"--include-data-dir={PANEL_DIR / 'static'}=static",
             f"--include-data-file={PANEL_DIR / 'README.md'}=README.md",
             "--output-filename=PolymarketWebPanel.exe",

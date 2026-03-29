@@ -34,13 +34,35 @@ def resolve_source_root() -> Path:
     if override:
         return Path(override).resolve()
 
+    cwd_app_root = Path.cwd() / "app_root"
+    if _looks_like_portable_app_root(cwd_app_root):
+        return cwd_app_root.resolve()
+
+    module_app_root = Path(__file__).resolve().parent / "app_root"
+    if _looks_like_portable_app_root(module_app_root):
+        return module_app_root.resolve()
+
+    exe_app_root = Path(sys.executable).resolve().parent / "app_root"
+    if _looks_like_portable_app_root(exe_app_root):
+        return exe_app_root.resolve()
+
     search_seeds = [Path.cwd(), Path(__file__).resolve()]
     if getattr(sys, "frozen", False):
         exe_path = Path(sys.executable).resolve()
         search_seeds.append(exe_path)
-        portable_app_root = exe_path.parent / "app_root"
-        if _looks_like_portable_app_root(portable_app_root):
-            return portable_app_root.resolve()
+        # In onefile mode, sys.executable may point to a temp extraction path.
+        # Prefer probing app_root near the original launch location first.
+        launch_hints = [Path.cwd(), exe_path.parent]
+        if sys.argv:
+            with_suppress = str(sys.argv[0] or "").strip()
+            if with_suppress:
+                arg0_path = Path(with_suppress).resolve()
+                search_seeds.append(arg0_path)
+                launch_hints.append(arg0_path.parent)
+        for hint in launch_hints:
+            portable_app_root = hint / "app_root"
+            if _looks_like_portable_app_root(portable_app_root):
+                return portable_app_root.resolve()
 
     found = _search_workspace_root(*search_seeds)
     if found is not None:

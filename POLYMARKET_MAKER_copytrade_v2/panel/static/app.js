@@ -16,7 +16,7 @@ function formatErrorMessage(error) {
     return "Unknown error.";
   }
   if (message.includes("Failed to fetch")) {
-    return "Unable to reach local panel backend. Please start with LaunchWebPanel.bat (or START_WEB_PANEL.bat) and retry.";
+    return "Unable to reach local panel backend. Please start with PolymarketWebPanel.exe and retry.";
   }
   return message;
 }
@@ -86,8 +86,6 @@ function maskAccountFields(account) {
   return {
     ...account,
     POLY_KEY: account.POLY_KEY || "",
-    POLY_API_SECRET: account.POLY_API_SECRET || "",
-    POLY_API_PASSPHRASE: account.POLY_API_PASSPHRASE || "",
   };
 }
 
@@ -115,8 +113,7 @@ function updateLinkState(link, address, emptyText) {
 function updateProfileLink() {
   const form = document.getElementById("account-form");
   const funder = normalizeAddress(form.elements.namedItem("POLY_FUNDER")?.value);
-  const dataAddress = normalizeAddress(form.elements.namedItem("POLY_DATA_ADDRESS")?.value);
-  updateLinkState(document.getElementById("profile-link"), dataAddress || funder, "No valid address");
+  updateLinkState(document.getElementById("profile-link"), funder, "No valid address");
 }
 
 function updateV3ProfileLink() {
