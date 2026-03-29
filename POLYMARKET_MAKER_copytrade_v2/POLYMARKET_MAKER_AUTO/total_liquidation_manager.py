@@ -1541,6 +1541,144 @@ class TotalLiquidationManager:
             "executed_price_source": "response_fill" if executed_size > 1e-9 else ("ioc_quote_fallback" if executed_avg_price is not None else "unknown"),
         }
 
+    def reenter_single_token_maker(
+        self,
+        autorun: Any,
+        token_id: str,
+        *,
+        target_size: float,
+        max_buy_price: Optional[float] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+
+        token_id = str(token_id or "").strip()
+        if not token_id:
+            return {"ok": False, "error": "missing token_id"}
+        requested_size = max(0.0, float(target_size or 0.0))
+        if requested_size <= 0:
+            return {"ok": False, "token_id": token_id, "error": "invalid target_size"}
+
+        client = self._get_cached_client()
+        if client is None:
+            return {"ok": False, "token_id": token_id, "error": "client init failed"}
+
+        before_size = max(0.0, float(self._fetch_single_position_size(token_id)))
+        remaining_target = max(0.0, requested_size - before_size)
+        if remaining_target <= 1e-6:
+            return {
+                "ok": True,
+                "token_id": token_id,
+                "before_size": before_size,
+                "after_size": before_size,
+                "requested_size": requested_size,
+                "remaining_target": 0.0,
+                "placed": False,
+                "reason": reason,
+            }
+
+        bid, ask = self._resolve_bid_ask(autorun, token_id)
+        if bid <= 0:
+            return {
+                "ok": False,
+                "token_id": token_id,
+                "before_size": before_size,
+                "after_size": before_size,
+                "requested_size": requested_size,
+                "remaining_target": remaining_target,
+                "reason": reason,
+                "error": "missing maker bid quote",
+                "quote_bid": bid,
+                "quote_ask": ask,
+            }
+
+        place_price = float(bid)
+        if max_buy_price is not None and max_buy_price > 0:
+            place_price = min(place_price, float(max_buy_price))
+        place_price = min(max(place_price, 0.01), 0.9999)
+        if place_price <= 0:
+            return {
+                "ok": False,
+                "token_id": token_id,
+                "before_size": before_size,
+                "after_size": before_size,
+                "requested_size": requested_size,
+                "remaining_target": remaining_target,
+                "reason": reason,
+                "error": "invalid maker price",
+            }
+
+        clear_info = self._clear_open_orders_for_token(
+            client,
+            token_id,
+            cancel_rounds=2,
+            clear_attempts_per_round=4,
+            sleep_sec=0.25,
+        )
+        if not bool(clear_info.get("cleared")):
+            return {
+                "ok": False,
+                "token_id": token_id,
+                "before_size": before_size,
+                "after_size": before_size,
+                "requested_size": requested_size,
+                "remaining_target": remaining_target,
+                "reason": reason,
+                "error": "failed to clear open orders before maker reentry",
+                "cancel_debug": clear_info,
+            }
+
+        try:
+            order = OrderArgs(
+                token_id=token_id,
+                side=BUY,
+                price=place_price,
+                size=remaining_target,
+            )
+            signed = client.create_order(order)
+            order_type = getattr(OrderType, "GTC", None) or getattr(OrderType, "GTD", None)
+            if order_type is None:
+                raise AttributeError("unsupported order type for maker reentry")
+            resp = self._post_order_compat(
+                client,
+                signed,
+                order_type,
+                post_only=True,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "token_id": token_id,
+                "before_size": before_size,
+                "after_size": before_size,
+                "requested_size": requested_size,
+                "remaining_target": remaining_target,
+                "reason": reason,
+                "error": f"maker reentry place failed: {exc}",
+            }
+
+        after_size = max(0.0, float(self._fetch_single_position_size(token_id)))
+        filled_size = max(0.0, after_size - before_size)
+        order_id = self._extract_order_id(resp)
+        return {
+            "ok": True,
+            "token_id": token_id,
+            "before_size": before_size,
+            "after_size": after_size,
+            "filled_size": filled_size,
+            "requested_size": requested_size,
+            "remaining_target": max(0.0, requested_size - after_size),
+            "placed": True,
+            "order_id": order_id,
+            "placed_price": place_price,
+            "placed_size": remaining_target,
+            "quote_bid": bid,
+            "quote_ask": ask,
+            "reason": reason,
+            "response": resp,
+        }
+
     def reenter_single_token_taker(
         self,
         autorun: Any,

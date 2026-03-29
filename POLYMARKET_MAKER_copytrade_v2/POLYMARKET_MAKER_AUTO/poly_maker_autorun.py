@@ -307,6 +307,7 @@ EXIT_ORDERBOOK_MISSING_BACKOFF_SCHEDULE_SEC = (5 * 60.0, 15 * 60.0, 30 * 60.0)
 POSITION_TRUTH_FALLBACK_MIN_ORDER_SIZE = 0.5
 EXIT_CLEANUP_MAX_RETRIES = 3
 STOPLOSS_NOFILL_SELL_ONLY_MAX_REQUEUES = 3
+POSITION_RECONCILE_MAX_REQUEUES = 3
 SELL_SIGNAL_FORCE_CLEANUP_TIMEOUT_SEC = 45.0
 ALLOWED_IOC_EXIT_REASONS = {"COPYTRADE_SELL", "STOPLOSS_REENTRY"}
 ALLOWED_EXIT_SIGNAL_REASONS = ALLOWED_IOC_EXIT_REASONS | {"TOTAL_LIQUIDATION"}
@@ -3704,13 +3705,28 @@ class AutoRunManager:
             if now < next_action_ts:
                 return False
             reference_price = _coerce_float(state.get("reentry_reference_price"))
-            maker_resp = self._total_liquidation.reenter_single_token_maker(
-                self,
-                token_id,
-                target_size=target_size,
-                max_buy_price=reference_price if reference_price and reference_price > 0 else None,
-                reason="stoploss_v4_reentry_maker",
-            )
+            try:
+                maker_resp = self._total_liquidation.reenter_single_token_maker(
+                    self,
+                    token_id,
+                    target_size=target_size,
+                    max_buy_price=reference_price if reference_price and reference_price > 0 else None,
+                    reason="stoploss_v4_reentry_maker",
+                )
+            except BaseException as exc:
+                state["state"] = "STOPLOSS_REENTRY_TAKER_PENDING"
+                state["reentry_next_action_ts"] = 0.0
+                state["last_error"] = f"maker unavailable -> taker fallback: {exc}"
+                print(
+                    f"[REENTRY_EXEC] token={token_id[:20]}... maker unavailable "
+                    f"error={exc} -> taker fallback"
+                )
+                return self._advance_stoploss_reentry_execution(
+                    token_id,
+                    state,
+                    now=now,
+                    position_row=position_row,
+                )
             state["reentry_last_bid"] = _coerce_float(maker_resp.get("quote_bid"))
             state["reentry_last_ask"] = _coerce_float(maker_resp.get("quote_ask"))
             refresh_sec = max(5.0, float(self.config.stoploss_reentry_maker_refresh_sec))
@@ -5657,7 +5673,7 @@ class AutoRunManager:
                 state["reentry_quote_missing_hits"] = int(state.get("reentry_quote_missing_hits") or 0) + 1
                 state["probe_confirm_hits"] = 0
                 state["rebound_confirm_hits"] = 0
-                state["last_error"] = "reentry quote missing or stale"
+                state["last_error"] = "ask missing or stale"
                 print(f"[RISK_GUARD] token={token_id[:20]}... skip reentry due to quote missing/stale")
                 state_dirty = True
                 continue
