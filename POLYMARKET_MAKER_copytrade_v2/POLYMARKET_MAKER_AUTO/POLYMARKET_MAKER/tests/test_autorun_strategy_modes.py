@@ -2981,12 +2981,12 @@ def test_reentry_requires_probe_then_rebound_zone(tmp_path):
     )
     prices = iter([0.83, 0.83, 0.879, 0.879])
     manager._estimate_reentry_buyable_price = lambda token_id, position_row=None: next(prices)  # type: ignore[assignment]
-    manager._total_liquidation.reenter_single_token_taker = (  # type: ignore[attr-defined]
+    manager._total_liquidation.reenter_single_token_maker = (  # type: ignore[attr-defined]
         lambda *args, **kwargs: {
             "ok": True,
             "before_size": 0.0,
             "after_size": 5.0,
-            "executed_price": 0.879,
+            "placed_price": 0.879,
         }
     )
     old_fetch = autorun_mod._fetch_position_rows_from_data_api
@@ -3026,12 +3026,12 @@ def test_reentry_uses_frozen_profit_pct_when_available(tmp_path):
     )
     prices = iter([0.83, 0.83, 0.879, 0.879])
     manager._estimate_reentry_buyable_price = lambda token_id, position_row=None: next(prices)  # type: ignore[assignment]
-    manager._total_liquidation.reenter_single_token_taker = (  # type: ignore[attr-defined]
+    manager._total_liquidation.reenter_single_token_maker = (  # type: ignore[attr-defined]
         lambda *args, **kwargs: {
             "ok": True,
             "before_size": 0.0,
             "after_size": 5.0,
-            "executed_price": 0.879,
+            "placed_price": 0.879,
         }
     )
     old_fetch = autorun_mod._fetch_position_rows_from_data_api
@@ -4488,12 +4488,12 @@ def test_reentry_fill_above_line_is_recovered_into_reentry_hold(tmp_path):
         },
     )
     manager._estimate_reentry_buyable_price = lambda token_id, position_row=None: 0.879  # type: ignore[assignment]
-    manager._total_liquidation.reenter_single_token_taker = (  # type: ignore[attr-defined]
+    manager._total_liquidation.reenter_single_token_maker = (  # type: ignore[attr-defined]
         lambda *args, **kwargs: {
             "ok": True,
             "before_size": 0.0,
             "after_size": 5.0,
-            "executed_avg_price": 0.885,
+            "placed_price": 0.885,
         }
     )
     old_fetch = autorun_mod._fetch_position_rows_from_data_api
@@ -4934,6 +4934,98 @@ def test_stoploss_min_age_gate_delays_execution_until_five_minutes(tmp_path):
 
     assert len(liq_calls) == 1
     assert liq_calls[0].get("reason") == "STOPLOSS_REENTRY"
+
+
+def test_stoploss_wide_spread_after_grace_requires_confirmation_window(tmp_path):
+    manager = _build_stoploss_manager(
+        tmp_path,
+        stoploss_overrides={
+            "min_age_minutes": 0.0,
+            "new_position_hard_grace_minutes": 5.0,
+            "new_position_spread_grace_minutes": 15.0,
+        },
+    )
+    now = time.time()
+    manager.config.stoploss_confirm_rounds = 1
+    manager.config.stoploss_wide_spread_confirm_rounds = 3
+    manager.config.stoploss_wide_spread_confirm_window_sec = 30.0
+    manager._ws_cache["t1"] = {"best_bid": 0.94, "best_ask": 0.98, "updated_at": now, "tick_size": 0.01}
+    liq_calls = []
+    manager._total_liquidation.liquidate_single_token_taker = (  # type: ignore[attr-defined]
+        lambda *args, **kwargs: liq_calls.append(kwargs) or {
+            "ok": True,
+            "before_size": 10.0,
+            "after_size": 0.0,
+            "requested_size": kwargs.get("target_size", 10.0),
+            "reason": kwargs.get("reason"),
+        }
+    )
+    old_fetch = autorun_mod._fetch_position_rows_from_data_api
+    autorun_mod._fetch_position_rows_from_data_api = lambda address: (  # type: ignore[assignment]
+        [{"asset": "t1", "size": 10.0, "avgPrice": 1.0, "curPrice": 0.94}],
+        "ok",
+    )
+    try:
+        manager._run_stoploss_check(now)
+        manager._run_stoploss_check(now + 901.0)
+        manager._run_stoploss_check(now + 916.0)
+    finally:
+        autorun_mod._fetch_position_rows_from_data_api = old_fetch  # type: ignore[assignment]
+
+    assert liq_calls == []
+    state = manager._stoploss_reentry_states["t1"]
+    assert int(state.get("stoploss_confirm_hits") or 0) == 0
+    assert int(state.get("wide_spread_stoploss_confirm_hits") or 0) == 2
+    assert int(state.get("last_stoploss_spread_extra_ticks") or 0) == 0
+    assert abs(float(state.get("last_stoploss_effective_trigger_price") or 0.0) - 0.95) < 1e-9
+
+
+def test_stoploss_wide_spread_triggers_after_confirmation_window(tmp_path):
+    manager = _build_stoploss_manager(
+        tmp_path,
+        stoploss_overrides={
+            "min_age_minutes": 0.0,
+            "new_position_hard_grace_minutes": 5.0,
+            "new_position_spread_grace_minutes": 15.0,
+        },
+    )
+    now = time.time()
+    manager.config.stoploss_confirm_rounds = 1
+    manager.config.stoploss_wide_spread_confirm_rounds = 3
+    manager.config.stoploss_wide_spread_confirm_window_sec = 30.0
+    manager._ws_cache["t1"] = {"best_bid": 0.93, "best_ask": 0.97, "updated_at": now, "tick_size": 0.01}
+    liq_calls = []
+    manager._total_liquidation.liquidate_single_token_taker = (  # type: ignore[attr-defined]
+        lambda *args, **kwargs: liq_calls.append(kwargs) or {
+            "ok": True,
+            "before_size": 10.0,
+            "after_size": 0.0,
+            "requested_size": kwargs.get("target_size", 10.0),
+            "reason": kwargs.get("reason"),
+        }
+    )
+    old_fetch = autorun_mod._fetch_position_rows_from_data_api
+    autorun_mod._fetch_position_rows_from_data_api = lambda address: (  # type: ignore[assignment]
+        [{"asset": "t1", "size": 10.0, "avgPrice": 1.0, "curPrice": 0.93}],
+        "ok",
+    )
+    try:
+        manager._run_stoploss_check(now)
+        manager._run_stoploss_check(now + 901.0)
+        manager._run_stoploss_check(now + 916.0)
+        manager._run_stoploss_check(now + 931.0)
+    finally:
+        autorun_mod._fetch_position_rows_from_data_api = old_fetch  # type: ignore[assignment]
+
+    assert len(liq_calls) == 1
+    assert liq_calls[0].get("reason") == "STOPLOSS_REENTRY"
+    journal_path = manager.config.data_dir / "stoploss_event_journal.jsonl"
+    lines = journal_path.read_text(encoding="utf-8").strip().splitlines()
+    payload = json.loads(lines[0])
+    assert payload["data"]["confirm_required"] == 1
+    assert payload["data"]["spread_extra_ticks"] == 0
+    assert abs(float(payload["data"]["base_trigger_price"]) - 0.95) < 1e-9
+    assert abs(float(payload["data"]["trigger_price"]) - 0.95) < 1e-9
 
 
 def test_stoploss_pending_confirm_schedules_retry_before_escalation(tmp_path):

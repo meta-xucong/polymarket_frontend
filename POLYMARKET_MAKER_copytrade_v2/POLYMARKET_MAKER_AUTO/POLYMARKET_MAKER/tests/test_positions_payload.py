@@ -48,6 +48,8 @@ from Volatility_arbitrage_run import (
     _fetch_positions_from_data_api,
     _lookup_position_avg_price,
     _merge_remote_position_size,
+    _origin_is_stale_positions_snapshot,
+    _resolve_post_buy_cost_anchor,
 )
 
 
@@ -281,6 +283,67 @@ def test_lookup_position_avg_price_zero_size(monkeypatch):
     assert avg_price == 0.5
     assert pos_size == 0
     assert origin == "mock-origin"
+
+
+def test_origin_is_stale_positions_snapshot_detects_stale_cache():
+    assert _origin_is_stale_positions_snapshot("data-api positions(stale-cache, total=92)")
+    assert not _origin_is_stale_positions_snapshot("data-api positions(limit=500, total=92, param=user)")
+
+
+def test_resolve_post_buy_cost_anchor_ignores_stale_positions_upgrade():
+    chosen, used_positions, reason = _resolve_post_buy_cost_anchor(
+        fill_avg=0.29,
+        positions_avg=0.339997,
+        prior_position=0.0,
+        prior_anchor_price=None,
+        positions_origin="data-api positions(stale-cache, total=92)",
+        position_epsilon=0.05,
+    )
+    assert chosen == pytest.approx(0.29)
+    assert used_positions is False
+    assert "stale" in reason
+
+
+def test_resolve_post_buy_cost_anchor_keeps_existing_anchor_when_prior_position_exists():
+    chosen, used_positions, reason = _resolve_post_buy_cost_anchor(
+        fill_avg=0.29,
+        positions_avg=0.31,
+        prior_position=5.0,
+        prior_anchor_price=0.34,
+        positions_origin="data-api positions(limit=500, total=92, param=user)",
+        position_epsilon=0.05,
+    )
+    assert chosen == pytest.approx(0.34)
+    assert used_positions is True
+    assert "prior_position_keep_existing_anchor" in reason
+
+
+def test_resolve_post_buy_cost_anchor_allows_fresh_positions_upgrade_without_prior_position():
+    chosen, used_positions, reason = _resolve_post_buy_cost_anchor(
+        fill_avg=0.29,
+        positions_avg=0.339997,
+        prior_position=0.0,
+        prior_anchor_price=None,
+        positions_origin="data-api positions(limit=500, total=92, param=user)",
+        position_epsilon=0.05,
+    )
+    assert chosen == pytest.approx(0.339997)
+    assert used_positions is True
+    assert "positions_snapshot_fresh" in reason
+
+
+def test_resolve_post_buy_cost_anchor_blocks_999_case_stale_upgrade():
+    chosen, used_positions, reason = _resolve_post_buy_cost_anchor(
+        fill_avg=0.29,
+        positions_avg=0.339997,
+        prior_position=0.0027,
+        prior_anchor_price=0.24,
+        positions_origin="data-api positions(stale-cache, total=92) via env:POLY_FUNDER",
+        position_epsilon=0.05,
+    )
+    assert chosen == pytest.approx(0.29)
+    assert used_positions is False
+    assert reason == "no_prior_position_use_fill:positions_snapshot_stale"
 
 
 def test_merge_remote_position_size_detects_updates():

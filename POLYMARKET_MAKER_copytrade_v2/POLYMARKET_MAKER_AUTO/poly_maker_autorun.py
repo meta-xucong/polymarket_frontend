@@ -1157,6 +1157,16 @@ class GlobalConfig:
     stoploss_wide_spread_pct: float = float(
         (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get("wide_spread_pct", 0.035)
     )
+    stoploss_wide_spread_confirm_window_sec: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "wide_spread_confirm_window_sec", 30.0
+        )
+    )
+    stoploss_wide_spread_confirm_rounds: int = int(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "wide_spread_confirm_rounds", 3
+        )
+    )
     stoploss_new_position_spread_grace_minutes: float = float(
         (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
             "new_position_spread_grace_minutes", 15.0
@@ -2061,6 +2071,30 @@ class GlobalConfig:
                     )
                 ),
             ),
+            stoploss_wide_spread_confirm_window_sec=max(
+                1.0,
+                float(
+                    stoploss_cfg.get(
+                        "wide_spread_confirm_window_sec",
+                        merged.get(
+                            "stoploss_wide_spread_confirm_window_sec",
+                            cls.stoploss_wide_spread_confirm_window_sec,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_wide_spread_confirm_rounds=max(
+                1,
+                int(
+                    stoploss_cfg.get(
+                        "wide_spread_confirm_rounds",
+                        merged.get(
+                            "stoploss_wide_spread_confirm_rounds",
+                            cls.stoploss_wide_spread_confirm_rounds,
+                        ),
+                    )
+                ),
+            ),
             stoploss_new_position_spread_grace_minutes=max(
                 0.0,
                 float(
@@ -2861,6 +2895,8 @@ class AutoRunManager:
             "next_stoploss_threshold_pct": base_threshold,
             "next_stoploss_trigger_ticks": 0,
             "stoploss_confirm_hits": 0,
+            "wide_spread_stoploss_confirm_hits": 0,
+            "wide_spread_stoploss_first_ts": 0.0,
             "stop_exit_price": None,
             "stop_exit_price_source": "",
             "stop_exit_ts": 0.0,
@@ -2936,6 +2972,9 @@ class AutoRunManager:
         merged["stoploss_confirm_hits"] = max(
             0, int(_coerce_float(merged.get("stoploss_confirm_hits")) or 0)
         )
+        merged["wide_spread_stoploss_confirm_hits"] = max(
+            0, int(_coerce_float(merged.get("wide_spread_stoploss_confirm_hits")) or 0)
+        )
         merged["daily_stoploss_full_clear_count"] = max(
             0, int(_coerce_float(merged.get("daily_stoploss_full_clear_count")) or 0)
         )
@@ -2957,6 +2996,7 @@ class AutoRunManager:
         for key in (
             "next_stoploss_threshold_pct",
             "next_stoploss_trigger_ticks",
+            "wide_spread_stoploss_first_ts",
             "stop_exit_price",
             "stop_exit_ts",
             "last_stoploss_size",
@@ -3336,6 +3376,35 @@ class AutoRunManager:
         if spread_value >= tier_1_pct - 1e-12:
             return max(0, int(self.config.stoploss_spread_extra_tick_tier_1_ticks))
         return 0
+
+    @staticmethod
+    def _reset_wide_spread_stoploss_confirmation(state: Dict[str, Any]) -> bool:
+        changed = False
+        if int(state.get("wide_spread_stoploss_confirm_hits") or 0) != 0:
+            state["wide_spread_stoploss_confirm_hits"] = 0
+            changed = True
+        if float(state.get("wide_spread_stoploss_first_ts") or 0.0) != 0.0:
+            state["wide_spread_stoploss_first_ts"] = 0.0
+            changed = True
+        return changed
+
+    def _advance_wide_spread_stoploss_confirmation(
+        self, state: Dict[str, Any], *, now: float
+    ) -> Tuple[int, float, bool]:
+        window_sec = max(1.0, float(self.config.stoploss_wide_spread_confirm_window_sec))
+        required_hits = max(1, int(self.config.stoploss_wide_spread_confirm_rounds))
+        first_ts = float(state.get("wide_spread_stoploss_first_ts") or 0.0)
+        hits = max(0, int(state.get("wide_spread_stoploss_confirm_hits") or 0))
+        if first_ts <= 0.0 or now < first_ts or (now - first_ts) > window_sec + 1e-12:
+            first_ts = float(now)
+            hits = 1
+        else:
+            hits += 1
+        elapsed = max(0.0, float(now) - first_ts)
+        state["wide_spread_stoploss_first_ts"] = float(first_ts)
+        state["wide_spread_stoploss_confirm_hits"] = int(hits)
+        ready = hits >= required_hits and elapsed >= window_sec - 1e-12
+        return hits, elapsed, ready
 
     def _build_stoploss_reentry_band(
         self,
@@ -5149,12 +5218,14 @@ class AutoRunManager:
             pos_size = float(_extract_position_size(row) or 0.0)
             if not self._has_actionable_position(token_id, pos_size, row=row):
                 state["stoploss_confirm_hits"] = 0
+                self._reset_wide_spread_stoploss_confirmation(state)
                 state["position_opened_ts"] = 0.0
                 state_dirty = True
                 continue
             avg_price = _extract_position_avg_price(row)
             if avg_price is None or avg_price <= 0:
                 state["stoploss_confirm_hits"] = 0
+                self._reset_wide_spread_stoploss_confirmation(state)
                 state["last_error"] = "missing avg price"
                 state_dirty = True
                 continue
@@ -5162,6 +5233,7 @@ class AutoRunManager:
             if position_opened_ts <= 0.0:
                 state["position_opened_ts"] = float(now)
                 state["stoploss_confirm_hits"] = 0
+                self._reset_wide_spread_stoploss_confirmation(state)
                 state["last_error"] = "stoploss age gate initialized"
                 state_dirty = True
                 continue
@@ -5170,6 +5242,7 @@ class AutoRunManager:
                 position_age = max(0.0, float(now) - position_opened_ts)
                 if position_age < min_age_seconds:
                     state["stoploss_confirm_hits"] = 0
+                    self._reset_wide_spread_stoploss_confirmation(state)
                     state["last_error"] = (
                         f"stoploss age gate active age={position_age:.0f}s "
                         f"required={min_age_seconds:.0f}s"
@@ -5178,12 +5251,14 @@ class AutoRunManager:
                     continue
             if float(state.get("next_stoploss_earliest_ts") or 0.0) > now:
                 state["stoploss_confirm_hits"] = 0
+                self._reset_wide_spread_stoploss_confirmation(state)
                 state_dirty = True
                 continue
 
             sellable_price = self._estimate_stoploss_sellable_price(token_id, row)
             if sellable_price is None or sellable_price <= 0:
                 state["stoploss_confirm_hits"] = 0
+                self._reset_wide_spread_stoploss_confirmation(state)
                 state["last_error"] = "sellable bid missing or stale"
                 print(f"[RISK_GUARD] token={token_id[:20]}... skip stoploss due to missing/stale executable bid")
                 state_dirty = True
@@ -5199,6 +5274,7 @@ class AutoRunManager:
             )
             state["next_stoploss_trigger_ticks"] = int(threshold_ticks)
             stoploss_trigger_price = max(0.0, float(avg_price) - float(threshold_ticks) * float(tick))
+            is_wide_spread = False
             spread_extra_ticks = 0
             effective_trigger_price = float(stoploss_trigger_price)
             if bool(self.config.stoploss_spread_guard_enabled):
@@ -5221,17 +5297,24 @@ class AutoRunManager:
                     state["last_stoploss_spread_pct"] = float(spread_pct)
                     state["last_stoploss_spread_bid"] = float(quote_bid)
                     state["last_stoploss_spread_ask"] = float(quote_ask)
-                    spread_extra_ticks = self._stoploss_spread_extra_ticks(spread_pct)
-                    state["last_stoploss_spread_extra_ticks"] = int(spread_extra_ticks)
-                    effective_trigger_price = max(
-                        0.0,
-                        float(stoploss_trigger_price)
-                        - float(spread_extra_ticks) * float(tick),
+                    is_wide_spread = (
+                        spread_pct >= float(self.config.stoploss_wide_spread_pct) - 1e-12
                     )
+                    if not is_wide_spread:
+                        spread_extra_ticks = self._stoploss_spread_extra_ticks(spread_pct)
+                        state["last_stoploss_spread_extra_ticks"] = int(spread_extra_ticks)
+                        effective_trigger_price = max(
+                            0.0,
+                            float(stoploss_trigger_price)
+                            - float(spread_extra_ticks) * float(tick),
+                        )
+                    else:
+                        state["last_stoploss_spread_extra_ticks"] = 0
+                        effective_trigger_price = float(stoploss_trigger_price)
                     state["last_stoploss_effective_trigger_price"] = float(
                         effective_trigger_price
                     )
-                    if spread_pct >= float(self.config.stoploss_wide_spread_pct) - 1e-12:
+                    if is_wide_spread:
                         hard_grace_sec = max(
                             0.0,
                             float(self.config.stoploss_new_position_hard_grace_minutes),
@@ -5243,20 +5326,32 @@ class AutoRunManager:
                         position_age = max(0.0, float(now) - position_opened_ts)
                         if position_age < hard_grace_sec:
                             state["stoploss_confirm_hits"] = 0
+                            self._reset_wide_spread_stoploss_confirmation(state)
                             state["last_error"] = (
                                 f"wide spread hard grace active age={position_age:.0f}s "
                                 f"spread={spread_pct:.3f}"
                             )
+                            print(
+                                f"[STOPLOSS][WIDE_SPREAD][HOLD] token={token_id[:20]}... "
+                                f"bid={float(quote_bid):.4f} ask={float(quote_ask):.4f} "
+                                f"spread={spread_pct:.3f} age={position_age:.0f}s "
+                                f"reason=hard_grace"
+                            )
                             state_dirty = True
                             continue
-                        if (
-                            position_age < grace_sec
-                            and float(sellable_price) > effective_trigger_price + 1e-12
-                        ):
+                        if position_age < grace_sec and float(sellable_price) > effective_trigger_price + 1e-12:
                             state["stoploss_confirm_hits"] = 0
+                            self._reset_wide_spread_stoploss_confirmation(state)
                             state["last_error"] = (
                                 f"wide spread grace active age={position_age:.0f}s "
-                                f"spread={spread_pct:.3f} widened_trigger={effective_trigger_price:.6f}"
+                                f"spread={spread_pct:.3f} trigger={effective_trigger_price:.6f}"
+                            )
+                            print(
+                                f"[STOPLOSS][WIDE_SPREAD][HOLD] token={token_id[:20]}... "
+                                f"bid={float(quote_bid):.4f} ask={float(quote_ask):.4f} "
+                                f"spread={spread_pct:.3f} age={position_age:.0f}s "
+                                f"trigger={effective_trigger_price:.4f} "
+                                f"reason=grace"
                             )
                             state_dirty = True
                             continue
@@ -5264,7 +5359,44 @@ class AutoRunManager:
                 if int(state.get("stoploss_confirm_hits") or 0) != 0:
                     state["stoploss_confirm_hits"] = 0
                     state_dirty = True
+                if self._reset_wide_spread_stoploss_confirmation(state):
+                    print(
+                        f"[STOPLOSS][WIDE_SPREAD][RESET] token={token_id[:20]}... "
+                        f"sellable={float(sellable_price):.4f} trigger={effective_trigger_price:.4f}"
+                    )
+                    state_dirty = True
                 continue
+
+            if is_wide_spread:
+                state["stoploss_confirm_hits"] = 0
+                hits, elapsed, ready = self._advance_wide_spread_stoploss_confirmation(
+                    state,
+                    now=now,
+                )
+                state["last_error"] = (
+                    f"wide spread stoploss confirm {hits}/"
+                    f"{int(self.config.stoploss_wide_spread_confirm_rounds)} "
+                    f"elapsed={elapsed:.0f}s/"
+                    f"{float(self.config.stoploss_wide_spread_confirm_window_sec):.0f}s "
+                    f"spread={float(state.get('last_stoploss_spread_pct') or 0.0):.3f}"
+                )
+                print(
+                    f"[STOPLOSS][WIDE_SPREAD][CONFIRM] token={token_id[:20]}... "
+                    f"bid={float(state.get('last_stoploss_spread_bid') or 0.0):.4f} "
+                    f"ask={float(state.get('last_stoploss_spread_ask') or 0.0):.4f} "
+                    f"spread={float(state.get('last_stoploss_spread_pct') or 0.0):.3f} "
+                    f"hits={hits}/{int(self.config.stoploss_wide_spread_confirm_rounds)} "
+                    f"elapsed={elapsed:.0f}s/"
+                    f"{float(self.config.stoploss_wide_spread_confirm_window_sec):.0f}s "
+                    f"trigger={effective_trigger_price:.4f} "
+                    f"sellable={float(sellable_price):.4f} "
+                    f"ready={ready}"
+                )
+                state_dirty = True
+                if not ready:
+                    continue
+            elif self._reset_wide_spread_stoploss_confirmation(state):
+                state_dirty = True
 
             hits = int(state.get("stoploss_confirm_hits") or 0) + 1
             state["stoploss_confirm_hits"] = hits

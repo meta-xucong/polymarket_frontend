@@ -1967,6 +1967,40 @@ def _fetch_position_snapshot_with_cache(
         return None, cache_ts
 
 
+def _origin_is_stale_positions_snapshot(origin: Optional[str]) -> bool:
+    text = str(origin or "").strip().lower()
+    return "stale-cache" in text
+
+
+def _resolve_post_buy_cost_anchor(
+    *,
+    fill_avg: float,
+    positions_avg: Optional[float],
+    prior_position: float,
+    prior_anchor_price: Optional[float],
+    positions_origin: Optional[str],
+    position_epsilon: float,
+) -> tuple[float, bool, str]:
+    """Keep post-buy anchors conservative while blocking stale snapshot upgrades."""
+
+    base_anchor = float(fill_avg)
+    if float(prior_position) > max(float(position_epsilon), 0.0):
+        if prior_anchor_price is not None and prior_anchor_price > 0:
+            base_anchor = float(prior_anchor_price)
+            reason = "prior_position_keep_existing_anchor"
+        else:
+            reason = "prior_position_missing_anchor_fallback_to_fill"
+    else:
+        reason = "no_prior_position_use_fill"
+
+    pos_avg = _coerce_float(positions_avg)
+    if pos_avg is None or pos_avg <= 0:
+        return base_anchor, False, f"{reason}:positions_avg_missing"
+    if _origin_is_stale_positions_snapshot(positions_origin):
+        return base_anchor, False, f"{reason}:positions_snapshot_stale"
+    return max(base_anchor, float(pos_avg)), True, f"{reason}:positions_snapshot_fresh"
+
+
 def _attempt_claim(client, meta: Dict[str, Any], token_id: str) -> None:
     market_id = meta.get("market_id") if isinstance(meta, dict) else None
     print(f"[CLAIM] 检测到需处理的未平仓仓位，token_id={token_id}，开始尝试 claim…")
@@ -6730,6 +6764,13 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 if filled_amt > 0:
                     fallback_price = float(avg_price if avg_price is not None else ref_price)
                     prior_position = float(position_size or 0.0)
+                    prior_status = strategy.status() if hasattr(strategy, "status") else {}
+                    prior_anchor_price = None
+                    if isinstance(prior_status, dict):
+                        prior_anchor_price = _coerce_float(
+                            prior_status.get("entry_price")
+                            or prior_status.get("last_buy_price")
+                        )
                     expected_total_position = prior_position + filled_amt
                     actual_avg_price: Optional[float] = None
                     actual_total_position: Optional[float] = None
@@ -6878,7 +6919,14 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         return
 
                     pos_avg_price = confirmed_avg
-                    fill_px = max(fallback_price, pos_avg_price if pos_avg_price is not None else fallback_price)
+                    fill_px, used_fresh_positions_anchor, anchor_reason = _resolve_post_buy_cost_anchor(
+                        fill_avg=fallback_price,
+                        positions_avg=pos_avg_price,
+                        prior_position=prior_position,
+                        prior_anchor_price=prior_anchor_price,
+                        positions_origin=origin_note,
+                        position_epsilon=POST_BUY_POSITION_SIZE_MATCH_ABS_TOL,
+                    )
                     if (
                         pos_avg_price is not None
                         and fallback_price > 0
@@ -6886,7 +6934,8 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                     ):
                         print(
                             f"[WARN] 买入成本来源不一致：fill_avg={fallback_price:.6f} "
-                            f"positions_avg={pos_avg_price:.6f}，采用更高值 {fill_px:.6f}"
+                            f"positions_avg={pos_avg_price:.6f}，chosen={fill_px:.6f} "
+                            f"reason={anchor_reason}"
                         )
                     position_size = confirmed_total if confirmed_total is not None else expected_total_position
                     last_order_size = filled_amt
@@ -6898,7 +6947,9 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                         f"[STATE] 成本确认 -> origin={origin_display} "
                         f"fill_avg={fallback_price:.4f} "
                         f"positions_avg={(pos_avg_price if pos_avg_price is not None else fallback_price):.4f} "
-                        f"chosen={fill_px:.4f} size={display_size:.4f}"
+                        f"chosen={fill_px:.4f} size={display_size:.4f} "
+                        f"used_fresh_positions={int(bool(used_fresh_positions_anchor))} "
+                        f"reason={anchor_reason}"
                     )
                     buy_filled_kwargs = {
                         "avg_price": fill_px,
