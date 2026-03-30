@@ -45,6 +45,7 @@ COPYTRADE_SERVICE="/etc/systemd/system/polymaker-copytrade.service"
 AUTORUN_SERVICE="/etc/systemd/system/polymaker-autorun.service"
 V3MULTI_SERVICE="/etc/systemd/system/copytrade-v3-multi.service"
 NGINX_SITE="/etc/nginx/sites-available/polymarket-panel.conf"
+SUDOERS_FILE="/etc/sudoers.d/polymarket-panel-systemctl"
 
 step() {
   echo
@@ -78,6 +79,7 @@ step "Install required software"
 apt install -y \
   git curl ca-certificates \
   openssl \
+  sudo \
   python3 python3-venv python3-pip python3-dev \
   build-essential libssl-dev libffi-dev \
   nginx
@@ -162,6 +164,34 @@ EOF
 
 chmod 640 "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
 chown root:"$APP_USER" "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
+
+step "Grant panel user limited systemd control"
+SYSTEMCTL_BIN="$(command -v systemctl)"
+if [[ -z "$SYSTEMCTL_BIN" ]]; then
+  echo "[ERROR] systemctl not found"
+  exit 1
+fi
+cat > "$SUDOERS_FILE" <<EOF
+$APP_USER ALL=(root) NOPASSWD: \
+  $SYSTEMCTL_BIN show polymaker-copytrade.service --property LoadState --value, \
+  $SYSTEMCTL_BIN is-active polymaker-copytrade.service, \
+  $SYSTEMCTL_BIN start polymaker-copytrade.service, \
+  $SYSTEMCTL_BIN stop polymaker-copytrade.service, \
+  $SYSTEMCTL_BIN restart polymaker-copytrade.service, \
+  $SYSTEMCTL_BIN show polymaker-autorun.service --property LoadState --value, \
+  $SYSTEMCTL_BIN is-active polymaker-autorun.service, \
+  $SYSTEMCTL_BIN start polymaker-autorun.service, \
+  $SYSTEMCTL_BIN stop polymaker-autorun.service, \
+  $SYSTEMCTL_BIN restart polymaker-autorun.service, \
+  $SYSTEMCTL_BIN show copytrade-v3-multi.service --property LoadState --value, \
+  $SYSTEMCTL_BIN is-active copytrade-v3-multi.service, \
+  $SYSTEMCTL_BIN start copytrade-v3-multi.service, \
+  $SYSTEMCTL_BIN stop copytrade-v3-multi.service, \
+  $SYSTEMCTL_BIN restart copytrade-v3-multi.service
+Defaults:$APP_USER !requiretty
+EOF
+chmod 440 "$SUDOERS_FILE"
+visudo -cf "$SUDOERS_FILE"
 
 step "Initialize account.json template"
 if [[ -f "$APP_DIR/$V2_DIR_REL/account.template.json" && ! -f "$APP_DIR/$V2_DIR_REL/account.json" ]]; then

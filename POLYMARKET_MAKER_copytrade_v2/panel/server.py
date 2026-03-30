@@ -409,6 +409,34 @@ def _run_command(*command: str) -> Tuple[bool, str]:
     return proc.returncode == 0, text
 
 
+def _run_systemctl(*args: str, require_privilege: bool = False) -> Tuple[bool, str]:
+    command = ["systemctl", *args]
+    use_sudo = (
+        os.name != "nt"
+        and os.geteuid() != 0
+        and str(os.getenv("POLY_SYSTEMCTL_USE_SUDO") or "1").strip() != "0"
+        and shutil.which("sudo") is not None
+    )
+    if require_privilege and use_sudo:
+        ok, output = _run_command("sudo", "-n", *command)
+        if ok:
+            return ok, output
+        lowered = output.lower()
+        denied_markers = (
+            "a password is required",
+            "password is required",
+            "permission denied",
+            "access denied",
+            "not allowed",
+            "a terminal is required",
+            "authentication is required",
+            "polkit",
+        )
+        if any(marker in lowered for marker in denied_markers):
+            return False, output
+    return _run_command(*command)
+
+
 def _pid_file(service_key: str) -> Path:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     return RUN_DIR / f"{service_key}.pid"
@@ -662,7 +690,13 @@ def _service_status() -> Dict[str, Any]:
     services: Dict[str, Any] = {}
     for key, meta in SERVICE_DEFS.items():
         service_name = meta["systemd"]
-        exists_ok, load_state = _run_command("systemctl", "show", service_name, "--property", "LoadState", "--value")
+        exists_ok, load_state = _run_systemctl(
+            "show",
+            service_name,
+            "--property",
+            "LoadState",
+            "--value",
+        )
         load_state_text = load_state.strip()
         if (not exists_ok) or load_state_text == "not-found":
             local_payload = _local_service_status()
@@ -673,7 +707,7 @@ def _service_status() -> Dict[str, Any]:
             services[key] = local_service
             continue
 
-        ok, output = _run_command("systemctl", "is-active", service_name)
+        ok, output = _run_systemctl("is-active", service_name)
         services[key] = {
             "service": service_name,
             "label": meta["label"],
@@ -704,8 +738,7 @@ def _service_action(action: str, service_key: str) -> Dict[str, Any]:
                     return stopped
                 return _start_local_service(service_key)
             return {"ok": False, "message": f"invalid action: {action}"}
-        exists_ok, load_state = _run_command(
-            "systemctl",
+        exists_ok, load_state = _run_systemctl(
             "show",
             service_name,
             "--property",
@@ -724,7 +757,7 @@ def _service_action(action: str, service_key: str) -> Dict[str, Any]:
                 return _start_local_service(service_key)
             return {"ok": False, "message": f"invalid action: {action}"}
 
-        ok, output = _run_command("systemctl", action, service_name)
+        ok, output = _run_systemctl(action, service_name, require_privilege=True)
         return {"ok": ok, "message": output or ("ok" if ok else "failed"), "service": service_name}
 
 
