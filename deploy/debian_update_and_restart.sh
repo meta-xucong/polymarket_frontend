@@ -22,6 +22,8 @@ REPO_URL="${REPO_URL:-https://github.com/meta-xucong/polymarket_frontend.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 RESTART_INACTIVE_SERVICES="${RESTART_INACTIVE_SERVICES:-0}"
 UPDATE_SERVICE_FILES="${UPDATE_SERVICE_FILES:-1}"
+SELF_REEXECED="${POLY_UPDATE_REEXECED:-0}"
+SCRIPT_REL="deploy/debian_update_and_restart.sh"
 
 POLY_CONF_DIR="/etc/polymarket"
 PANEL_ENV_FILE="$POLY_CONF_DIR/panel.env"
@@ -29,14 +31,19 @@ TRADING_ENV_FILE="$POLY_CONF_DIR/trading.env"
 
 V2_DIR_REL="POLYMARKET_MAKER_copytrade_v2"
 V3_DIR_REL="POLY_SMARTMONEY/copytrade_v3_muti"
+V2_ACCOUNT_REL="$V2_DIR_REL/account.json"
 V2_COPYTRADE_CONFIG_REL="$V2_DIR_REL/copytrade/copytrade_config.json"
 V2_GLOBAL_CONFIG_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/global_config.json"
 V2_RUN_PARAMS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/run_params.json"
 V2_STRATEGY_DEFAULTS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/strategy_defaults.json"
 V2_TRADING_YAML_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/trading.yaml"
+V2_STATUS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/data/autorun_status.json"
+V2_TOKENS_REL="$V2_DIR_REL/copytrade/tokens_from_copytrade.json"
+V2_COPYTRADE_STATE_REL="$V2_DIR_REL/copytrade/copytrade_state.json"
 V3_COPYTRADE_CONFIG_REL="$V3_DIR_REL/copytrade/copytrade_config.json"
 V3_ACCOUNTS_REL="$V3_DIR_REL/accounts.json"
 V3_DEFAULT_ACCOUNT_JSON='{"accounts":[{"name":"Account 1","enabled":true,"private_key":"","funder":"","api_key":"","api_secret":"","api_passphrase":"","data_address":""}]}'
+PANEL_AUTH_REL="panel/auth.json"
 
 PANEL_SERVICE="/etc/systemd/system/polymarket-panel.service"
 COPYTRADE_SERVICE="/etc/systemd/system/polymaker-copytrade.service"
@@ -108,9 +115,23 @@ if [[ "$current_url" != "$REPO_URL" ]]; then
 fi
 
 step "Fetch latest source and fast-forward update"
+before_head="$(run_as_app git -C "$APP_DIR" rev-parse HEAD)"
 run_as_app git -C "$APP_DIR" fetch --all --tags
 run_as_app git -C "$APP_DIR" checkout "$REPO_BRANCH"
 run_as_app git -C "$APP_DIR" pull --ff-only origin "$REPO_BRANCH"
+after_head="$(run_as_app git -C "$APP_DIR" rev-parse HEAD)"
+if [[ "$SELF_REEXECED" != "1" && "$before_head" != "$after_head" ]]; then
+  step "Re-exec latest updater after source refresh"
+  exec env POLY_UPDATE_REEXECED=1 \
+    APP_USER="$APP_USER" \
+    APP_DIR="$APP_DIR" \
+    INSTANCE_DIR="$INSTANCE_DIR" \
+    REPO_URL="$REPO_URL" \
+    REPO_BRANCH="$REPO_BRANCH" \
+    RESTART_INACTIVE_SERVICES="$RESTART_INACTIVE_SERVICES" \
+    UPDATE_SERVICE_FILES="$UPDATE_SERVICE_FILES" \
+    bash "$APP_DIR/$SCRIPT_REL"
+fi
 
 step "Refresh Python dependencies"
 run_as_app "$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
@@ -159,8 +180,10 @@ if [[ -z "$PANEL_SESSION_SECRET" ]]; then
 fi
 
 legacy_instance_root="${POLY_INSTANCE_ROOT:-}"
+legacy_source_mode=0
 if [[ -z "$legacy_instance_root" || "$legacy_instance_root" == "$APP_DIR" ]]; then
   INSTANCE_DIR="${INSTANCE_DIR:-/var/lib/polymarket_frontend}"
+  legacy_source_mode=1
 else
   INSTANCE_DIR="$legacy_instance_root"
 fi
@@ -168,8 +191,10 @@ fi
 step "Ensure instance overlay files exist"
 mkdir -p \
   "$INSTANCE_DIR/$V2_DIR_REL/copytrade" \
+  "$INSTANCE_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/data" \
   "$INSTANCE_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config" \
-  "$INSTANCE_DIR/$V3_DIR_REL/copytrade"
+  "$INSTANCE_DIR/$V3_DIR_REL/copytrade" \
+  "$INSTANCE_DIR/panel"
 chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR"
 
 copy_if_missing() {
@@ -182,6 +207,18 @@ copy_if_missing() {
   fi
 }
 
+copy_runtime_if_missing() {
+  local rel="$1"
+  local src="$APP_DIR/$rel"
+  local dst="$INSTANCE_DIR/$rel"
+  if [[ -f "$src" && ! -f "$dst" ]]; then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    chown "$APP_USER:$APP_USER" "$dst"
+  fi
+}
+
+copy_if_missing "$APP_DIR/$V2_ACCOUNT_REL" "$INSTANCE_DIR/$V2_ACCOUNT_REL"
 copy_if_missing "$APP_DIR/$V2_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V2_COPYTRADE_CONFIG_REL"
 copy_if_missing "$APP_DIR/$V2_GLOBAL_CONFIG_REL" "$INSTANCE_DIR/$V2_GLOBAL_CONFIG_REL"
 copy_if_missing "$APP_DIR/$V2_RUN_PARAMS_REL" "$INSTANCE_DIR/$V2_RUN_PARAMS_REL"
@@ -192,6 +229,21 @@ if [[ ! -f "$INSTANCE_DIR/$V3_ACCOUNTS_REL" ]]; then
   mkdir -p "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
   printf '%s\n' "$V3_DEFAULT_ACCOUNT_JSON" > "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
   chown "$APP_USER:$APP_USER" "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
+fi
+copy_runtime_if_missing "$PANEL_AUTH_REL"
+copy_runtime_if_missing "$V2_STATUS_REL"
+copy_runtime_if_missing "$V2_TOKENS_REL"
+copy_runtime_if_missing "$V2_COPYTRADE_STATE_REL"
+
+if [[ "$legacy_source_mode" == "1" ]]; then
+  step "Clean legacy tracked config files from git worktree"
+  run_as_app git -C "$APP_DIR" restore -- \
+    "$V2_ACCOUNT_REL" \
+    "$V2_COPYTRADE_CONFIG_REL" \
+    "$V2_GLOBAL_CONFIG_REL" \
+    "$V2_RUN_PARAMS_REL" \
+    "$V2_STRATEGY_DEFAULTS_REL" \
+    "$V2_TRADING_YAML_REL" || true
 fi
 
 step "Persist panel runtime env"
