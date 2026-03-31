@@ -421,7 +421,7 @@ def get_settings_payload() -> Dict[str, Any]:
             "max_position_per_market": _coerce_float(
                 defaults.get("max_position_per_market"), 10.0
             ),
-            "drop_pct": _coerce_float(run_cfg.get("drop_pct"), 0.0),
+            "drop_pct": _coerce_float(run_cfg.get("drop_pct"), 0.01),
             "profit_pct": _coerce_float(run_cfg.get("profit_pct"), 0.003),
             "sell_mode": str(run_cfg.get("sell_mode") or "aggressive"),
             "shock_guard_enabled": _coerce_bool(shock_guard.get("enabled"), False),
@@ -513,7 +513,7 @@ def save_settings_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     if "drop_pct" in strategy_in:
-        run_cfg["drop_pct"] = _coerce_float(strategy_in.get("drop_pct"), run_cfg.get("drop_pct", 0.0))
+        run_cfg["drop_pct"] = _coerce_float(strategy_in.get("drop_pct"), run_cfg.get("drop_pct", 0.01))
     if "profit_pct" in strategy_in:
         run_cfg["profit_pct"] = _coerce_float(
             strategy_in.get("profit_pct"), run_cfg.get("profit_pct", 0.003)

@@ -29,13 +29,13 @@ class StrategyConfig:
 
     # 新增参数：基于窗口的跌幅/涨幅监控
     drop_window_minutes: float = 10.0
-    drop_pct: float = 0.05
+    drop_pct: float = 0.01
     profit_pct: Optional[float] = 0.05
     max_history_points: int = 600
 
     # 卖出后动态抬升跌幅阈值（默认关闭，如需开启请设定步长）
     enable_incremental_drop_pct: bool = False
-    incremental_drop_pct_step: float = 0.001
+    incremental_drop_pct_step: float = 0.002
     incremental_drop_pct_cap: float = 0.20
 
     # 轻量防抖：同一方向的“待确认”状态下不重复发信号

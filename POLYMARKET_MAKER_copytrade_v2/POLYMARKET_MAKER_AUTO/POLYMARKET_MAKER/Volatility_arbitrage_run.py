@@ -2876,12 +2876,12 @@ def main(run_config: Optional[Dict[str, Any]] = None):
     if min_buy_price is None:
         min_buy_price = 0.01  # 默认最低买入价 0.01
     drop_window = _coerce_float(run_cfg.get("drop_window_minutes")) or 10.0
-    drop_pct = _normalize_ratio(run_cfg.get("drop_pct"), 0.0)
+    drop_pct = _normalize_ratio(run_cfg.get("drop_pct"), 0.01)
     profit_pct = _normalize_ratio(run_cfg.get("profit_pct"), 0.003)
     profit_pct = _enforce_profit_floor(profit_pct)
 
     incremental_drop_pct_step = _normalize_ratio(
-        run_cfg.get("incremental_drop_pct_step"), 0.0
+        run_cfg.get("incremental_drop_pct_step"), 0.002
     )
     enable_incremental_drop_pct = bool(
         run_cfg.get("enable_incremental_drop_pct", incremental_drop_pct_step > 0)
