@@ -154,12 +154,18 @@ PYTHONUTF8=1
 PYTHONIOENCODING=utf-8
 EOF
 
-# Trading env is reserved for optional future env vars.
+# Trading env with full configuration keys (will be updated by panel)
 cat > "$TRADING_ENV_FILE" <<'EOF'
-# Optional overrides for trading workers.
-# Example:
-# HTTP_PROXY=http://127.0.0.1:7890
-# HTTPS_PROXY=http://127.0.0.1:7890
+# Trading configuration - auto updated from account settings
+POLY_HOST=https://clob.polymarket.com
+POLY_CHAIN_ID=137
+POLY_SIGNATURE=2
+POLY_KEY=
+POLY_FUNDER=
+POLY_API_KEY=
+POLY_API_SECRET=
+POLY_API_PASSPHRASE=
+POLY_DATA_ADDRESS=
 EOF
 
 chmod 640 "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
@@ -213,7 +219,9 @@ Type=simple
 User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR/$PANEL_DIR_REL
-ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python server.py --host $PANEL_BIND_HOST --port $PANEL_PORT'
+EnvironmentFile=$PANEL_ENV_FILE
+EnvironmentFile=$TRADING_ENV_FILE
+ExecStart=$APP_DIR/.venv/bin/python server.py --host $PANEL_BIND_HOST --port $PANEL_PORT
 Restart=always
 RestartSec=5
 
@@ -231,7 +239,9 @@ Type=simple
 User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/copytrade
-ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json'
+EnvironmentFile=$PANEL_ENV_FILE
+EnvironmentFile=$TRADING_ENV_FILE
+ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json
 Restart=always
 RestartSec=5
 
@@ -249,7 +259,9 @@ Type=simple
 User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO
-ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl'
+EnvironmentFile=$PANEL_ENV_FILE
+EnvironmentFile=$TRADING_ENV_FILE
+ExecStart=$APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl
 Restart=always
 RestartSec=5
 
@@ -267,13 +279,30 @@ Type=simple
 User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V3_DIR_REL
-ExecStart=/bin/bash -lc 'set -a; source $PANEL_ENV_FILE; source $TRADING_ENV_FILE; set +a; exec $APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json'
+EnvironmentFile=$PANEL_ENV_FILE
+EnvironmentFile=$TRADING_ENV_FILE
+ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+step "Create log symlinks for panel"
+mkdir -p "$APP_DIR/$V2_DIR_REL/copytrade/logs"
+ln -sf "$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_$(date +%Y%m%d).log" \
+       "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log"
+
+# Setup cron for daily log link update
+cat > /etc/cron.daily/polymarket-log-links <<EOF
+#!/bin/bash
+# Update log symlinks daily
+APP_DIR="$APP_DIR"
+ln -sf "\$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_\$(date +%Y%m%d).log" \
+       "\$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log" 2>/dev/null || true
+EOF
+chmod +x /etc/cron.daily/polymarket-log-links
 
 step "Enable panel service"
 systemctl daemon-reload

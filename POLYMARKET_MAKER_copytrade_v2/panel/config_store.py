@@ -382,6 +382,10 @@ def save_account_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if ACCOUNT_PATH == default_source_path and _instance_mode_enabled():
         mirror_path = default_source_path
     _atomic_write_json_with_optional_mirror(write_path, current, mirror_path=mirror_path)
+    
+    # 新增：同步到 trading.env 供 systemd 服务使用
+    _sync_to_trading_env(current)
+    
     return get_account_payload()
 
 
@@ -867,3 +871,38 @@ def get_trading_yaml_text() -> str:
         return ""
     data = yaml.safe_load(read_path.read_text(encoding="utf-8"))
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+
+def _sync_to_trading_env(config: dict) -> None:
+    """将配置同步到 /etc/polymarket/trading.env 供 systemd 服务使用"""
+    import os
+    import tempfile
+    import shutil
+    
+    env_path = Path("/etc/polymarket/trading.env")
+    
+    # 确保目录存在
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    env_content = f"""# Trading configuration - auto generated from account.json
+POLY_HOST={config.get('POLY_HOST', 'https://clob.polymarket.com')}
+POLY_CHAIN_ID={config.get('POLY_CHAIN_ID', 137)}
+POLY_SIGNATURE={config.get('POLY_SIGNATURE', 2)}
+POLY_KEY={config.get('POLY_KEY', '')}
+POLY_FUNDER={config.get('POLY_FUNDER', '')}
+POLY_API_KEY={config.get('POLY_API_KEY', '')}
+POLY_API_SECRET={config.get('POLY_API_SECRET', '')}
+POLY_API_PASSPHRASE={config.get('POLY_API_PASSPHRASE', '')}
+POLY_DATA_ADDRESS={config.get('POLY_DATA_ADDRESS', '')}
+"""
+    # 使用临时文件原子写入，避免权限问题
+    try:
+        fd, temp_path = tempfile.mkstemp(dir=str(env_path.parent), prefix='.trading.env.')
+        try:
+            os.write(fd, env_content.encode('utf-8'))
+        finally:
+            os.close(fd)
+        os.chmod(temp_path, 0o640)
+        shutil.move(temp_path, str(env_path))
+    except Exception as e:
+        print(f"[WARN] Failed to update trading.env: {e}")
