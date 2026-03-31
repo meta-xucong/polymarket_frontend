@@ -238,7 +238,6 @@ copy_runtime_if_missing "$V2_COPYTRADE_STATE_REL"
 if [[ "$INSTANCE_DIR" != "$APP_DIR" ]]; then
   step "Clean tracked config files from git worktree"
   run_as_app git -C "$APP_DIR" restore -- \
-    "$V2_ACCOUNT_REL" \
     "$V2_COPYTRADE_CONFIG_REL" \
     "$V2_GLOBAL_CONFIG_REL" \
     "$V2_RUN_PARAMS_REL" \
