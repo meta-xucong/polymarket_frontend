@@ -235,8 +235,8 @@ copy_runtime_if_missing "$V2_STATUS_REL"
 copy_runtime_if_missing "$V2_TOKENS_REL"
 copy_runtime_if_missing "$V2_COPYTRADE_STATE_REL"
 
-if [[ "$legacy_source_mode" == "1" ]]; then
-  step "Clean legacy tracked config files from git worktree"
+if [[ "$INSTANCE_DIR" != "$APP_DIR" ]]; then
+  step "Clean tracked config files from git worktree"
   run_as_app git -C "$APP_DIR" restore -- \
     "$V2_ACCOUNT_REL" \
     "$V2_COPYTRADE_CONFIG_REL" \
