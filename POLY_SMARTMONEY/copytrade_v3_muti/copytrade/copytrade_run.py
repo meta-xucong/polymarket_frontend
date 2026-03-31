@@ -382,6 +382,7 @@ def _seed_existing_positions_on_init(
             "last_seen": (existing or {}).get("last_seen") or now_iso,
             "active": True,
             "introduced_by_buy": True,
+            "seeded_on_init": True,
         }
         seeded += 1
 
@@ -626,6 +627,8 @@ def run_once(
             # 保留 existing 的 introduced_by_buy 标记，避免被覆盖丢失
             if existing and existing.get("introduced_by_buy", False):
                 new_entry["introduced_by_buy"] = True
+            if existing and existing.get("seeded_on_init", False):
+                new_entry["seeded_on_init"] = True
 
             if existing:
                 existing_ts = _parse_last_seen(existing.get("last_seen"))
@@ -640,6 +643,9 @@ def run_once(
             if action.get("side") == "BUY":
                 if not token_map[key].get("introduced_by_buy", False):
                     token_map[key]["introduced_by_buy"] = True
+                    changed = True
+                if token_map[key].get("seeded_on_init", False):
+                    token_map[key]["seeded_on_init"] = False
                     changed = True
                 sell_changed = (
                     _promote_sell_signal_if_introduced(

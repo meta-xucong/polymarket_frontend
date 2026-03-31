@@ -17,6 +17,7 @@ set -euo pipefail
 
 APP_USER="${APP_USER:-polymarket}"
 APP_DIR="${APP_DIR:-/opt/polymarket_frontend}"
+INSTANCE_DIR="${INSTANCE_DIR:-/var/lib/polymarket_frontend}"
 REPO_URL="${REPO_URL:-https://github.com/meta-xucong/polymarket_frontend.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 RESTART_INACTIVE_SERVICES="${RESTART_INACTIVE_SERVICES:-0}"
@@ -28,6 +29,14 @@ TRADING_ENV_FILE="$POLY_CONF_DIR/trading.env"
 
 V2_DIR_REL="POLYMARKET_MAKER_copytrade_v2"
 V3_DIR_REL="POLY_SMARTMONEY/copytrade_v3_muti"
+V2_COPYTRADE_CONFIG_REL="$V2_DIR_REL/copytrade/copytrade_config.json"
+V2_GLOBAL_CONFIG_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/global_config.json"
+V2_RUN_PARAMS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/run_params.json"
+V2_STRATEGY_DEFAULTS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/strategy_defaults.json"
+V2_TRADING_YAML_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/trading.yaml"
+V3_COPYTRADE_CONFIG_REL="$V3_DIR_REL/copytrade/copytrade_config.json"
+V3_ACCOUNTS_REL="$V3_DIR_REL/accounts.json"
+V3_DEFAULT_ACCOUNT_JSON='{"accounts":[{"name":"Account 1","enabled":true,"private_key":"","funder":"","api_key":"","api_secret":"","api_passphrase":"","data_address":""}]}'
 
 PANEL_SERVICE="/etc/systemd/system/polymarket-panel.service"
 COPYTRADE_SERVICE="/etc/systemd/system/polymaker-copytrade.service"
@@ -134,6 +143,43 @@ if [[ ! -f "$PANEL_ENV_FILE" ]]; then
   exit 1
 fi
 
+set -a
+source "$PANEL_ENV_FILE"
+set +a
+
+PANEL_BIND_HOST="${POLY_PANEL_HOST:-127.0.0.1}"
+PANEL_PORT="${POLY_PANEL_PORT:-8787}"
+INSTANCE_DIR="${POLY_INSTANCE_ROOT:-$INSTANCE_DIR}"
+
+step "Ensure instance overlay files exist"
+mkdir -p \
+  "$INSTANCE_DIR/$V2_DIR_REL/copytrade" \
+  "$INSTANCE_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config" \
+  "$INSTANCE_DIR/$V3_DIR_REL/copytrade"
+chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR"
+
+copy_if_missing() {
+  local src="$1"
+  local dst="$2"
+  if [[ -f "$src" && ! -f "$dst" ]]; then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    chown "$APP_USER:$APP_USER" "$dst"
+  fi
+}
+
+copy_if_missing "$APP_DIR/$V2_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V2_COPYTRADE_CONFIG_REL"
+copy_if_missing "$APP_DIR/$V2_GLOBAL_CONFIG_REL" "$INSTANCE_DIR/$V2_GLOBAL_CONFIG_REL"
+copy_if_missing "$APP_DIR/$V2_RUN_PARAMS_REL" "$INSTANCE_DIR/$V2_RUN_PARAMS_REL"
+copy_if_missing "$APP_DIR/$V2_STRATEGY_DEFAULTS_REL" "$INSTANCE_DIR/$V2_STRATEGY_DEFAULTS_REL"
+copy_if_missing "$APP_DIR/$V2_TRADING_YAML_REL" "$INSTANCE_DIR/$V2_TRADING_YAML_REL"
+copy_if_missing "$APP_DIR/$V3_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V3_COPYTRADE_CONFIG_REL"
+if [[ ! -f "$INSTANCE_DIR/$V3_ACCOUNTS_REL" ]]; then
+  mkdir -p "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
+  printf '%s\n' "$V3_DEFAULT_ACCOUNT_JSON" > "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
+  chown "$APP_USER:$APP_USER" "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
+fi
+
 # Check if trading.env has the new format (contains POLY_KEY)
 if [[ ! -f "$TRADING_ENV_FILE" ]] || ! grep -q "^POLY_KEY=" "$TRADING_ENV_FILE" 2>/dev/null; then
   echo "[INFO] Updating $TRADING_ENV_FILE to new format"
@@ -153,17 +199,11 @@ EOF
   chown root:"$APP_USER" "$TRADING_ENV_FILE"
 fi
 
-# Update systemd service files to use EnvironmentFile (if needed)
 if [[ "$UPDATE_SERVICE_FILES" == "1" ]]; then
-  step "Update systemd service files to use EnvironmentFile"
-  
-  # Check if services need updating (old format uses bash -lc)
-  if grep -q "bash -lc.*source.*TRADING_ENV_FILE" "$AUTORUN_SERVICE" 2>/dev/null; then
-    echo "[INFO] Updating service files to use EnvironmentFile directive"
-    
-    # Update panel service
-    if [[ -f "$PANEL_SERVICE" ]]; then
-      cat > "$PANEL_SERVICE" <<EOF
+  step "Rewrite systemd service files to current layout"
+
+  if [[ -f "$PANEL_SERVICE" ]]; then
+    cat > "$PANEL_SERVICE" <<EOF
 [Unit]
 Description=Polymarket Panel Backend
 After=network.target
@@ -175,18 +215,17 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/panel
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python server.py --host 127.0.0.1 --port 8787
+ExecStart=$APP_DIR/.venv/bin/python server.py --host $PANEL_BIND_HOST --port $PANEL_PORT
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    fi
-    
-    # Update copytrade service
-    if [[ -f "$COPYTRADE_SERVICE" ]]; then
-      cat > "$COPYTRADE_SERVICE" <<EOF
+  fi
+
+  if [[ -f "$COPYTRADE_SERVICE" ]]; then
+    cat > "$COPYTRADE_SERVICE" <<EOF
 [Unit]
 Description=Polymaker Copytrade V2
 After=network.target
@@ -198,18 +237,17 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/copytrade
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json
+ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config $INSTANCE_DIR/$V2_COPYTRADE_CONFIG_REL
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    fi
-    
-    # Update autorun service
-    if [[ -f "$AUTORUN_SERVICE" ]]; then
-      cat > "$AUTORUN_SERVICE" <<EOF
+  fi
+
+  if [[ -f "$AUTORUN_SERVICE" ]]; then
+    cat > "$AUTORUN_SERVICE" <<EOF
 [Unit]
 Description=Polymaker Autorun V2
 After=network.target
@@ -221,18 +259,17 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl
+ExecStart=$APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl --global-config $INSTANCE_DIR/$V2_GLOBAL_CONFIG_REL --strategy-config $INSTANCE_DIR/$V2_STRATEGY_DEFAULTS_REL --run-config-template $INSTANCE_DIR/$V2_RUN_PARAMS_REL
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    fi
-    
-    # Update v3multi service
-    if [[ -f "$V3MULTI_SERVICE" ]]; then
-      cat > "$V3MULTI_SERVICE" <<EOF
+  fi
+
+  if [[ -f "$V3MULTI_SERVICE" ]]; then
+    cat > "$V3MULTI_SERVICE" <<EOF
 [Unit]
 Description=Polymaker SmartMoney V3 Multi
 After=network.target
@@ -244,20 +281,15 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V3_DIR_REL
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json
+ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config $INSTANCE_DIR/$V3_COPYTRADE_CONFIG_REL
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    fi
-    
-    echo "[OK] Service files updated"
-  else
-    echo "[OK] Service files already up to date"
   fi
-  
+
   # Ensure log symlinks exist
   step "Ensure log symlinks exist"
   mkdir -p "$APP_DIR/$V2_DIR_REL/copytrade/logs"

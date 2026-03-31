@@ -139,3 +139,47 @@ def test_init_position_seed_allows_sell_without_historical_buy(tmp_path: Path):
     assert sell_payload["sell_tokens"][0]["token_id"] == token_id
     assert sell_payload["sell_tokens"][0]["status"] == "pending"
     assert sell_payload["sell_tokens"][0]["introduced_by_buy"] is True
+
+
+def test_seeded_positions_are_marked_until_real_buy_arrives(tmp_path: Path):
+    account = "0xseeded"
+    token_id = "token-seeded-buy"
+    t0 = datetime.now(timezone.utc)
+    logger = logging.getLogger("test_copytrade_seeded_marker")
+    logger.handlers.clear()
+    logger.addHandler(logging.NullHandler())
+    logger.propagate = False
+
+    config = {
+        "targets": [{"account": account, "enabled": True, "min_size": 5}],
+        "initial_lookback_sec": 3600,
+    }
+
+    run_once(
+        config,
+        base_dir=tmp_path,
+        client=FakeClient(
+            {account: []},
+            {account: [{"asset": token_id, "size": "10"}]},
+        ),
+        logger=logger,
+    )
+
+    token_payload = _read_json(tmp_path / "tokens_from_copytrade.json")
+    assert len(token_payload["tokens"]) == 1
+    assert token_payload["tokens"][0]["token_id"] == token_id
+    assert token_payload["tokens"][0]["seeded_on_init"] is True
+
+    t1 = t0 + timedelta(minutes=5)
+    run_once(
+        config,
+        base_dir=tmp_path,
+        client=FakeClient({account: [_trade(token_id, "BUY", t1)]}),
+        logger=logger,
+    )
+
+    token_payload = _read_json(tmp_path / "tokens_from_copytrade.json")
+    assert len(token_payload["tokens"]) == 1
+    assert token_payload["tokens"][0]["token_id"] == token_id
+    assert token_payload["tokens"][0]["introduced_by_buy"] is True
+    assert token_payload["tokens"][0]["seeded_on_init"] is False

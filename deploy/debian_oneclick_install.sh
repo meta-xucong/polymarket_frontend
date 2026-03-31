@@ -18,6 +18,7 @@ set -euo pipefail
 
 APP_USER="${APP_USER:-polymarket}"
 APP_DIR="${APP_DIR:-/opt/polymarket_frontend}"
+INSTANCE_DIR="${INSTANCE_DIR:-/var/lib/polymarket_frontend}"
 REPO_URL="${REPO_URL:-https://github.com/meta-xucong/polymarket_frontend.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 PANEL_PORT="${PANEL_PORT:-8787}"
@@ -35,6 +36,16 @@ fi
 PANEL_DIR_REL="POLYMARKET_MAKER_copytrade_v2/panel"
 V2_DIR_REL="POLYMARKET_MAKER_copytrade_v2"
 V3_DIR_REL="POLY_SMARTMONEY/copytrade_v3_muti"
+V2_COPYTRADE_CONFIG_REL="$V2_DIR_REL/copytrade/copytrade_config.json"
+V2_ACCOUNT_TEMPLATE_REL="$V2_DIR_REL/account.template.json"
+V2_ACCOUNT_REL="$V2_DIR_REL/account.json"
+V2_GLOBAL_CONFIG_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/global_config.json"
+V2_RUN_PARAMS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/run_params.json"
+V2_STRATEGY_DEFAULTS_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/strategy_defaults.json"
+V2_TRADING_YAML_REL="$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config/trading.yaml"
+V3_COPYTRADE_CONFIG_REL="$V3_DIR_REL/copytrade/copytrade_config.json"
+V3_ACCOUNTS_REL="$V3_DIR_REL/accounts.json"
+V3_DEFAULT_ACCOUNT_JSON='{"accounts":[{"name":"Account 1","enabled":true,"private_key":"","funder":"","api_key":"","api_secret":"","api_passphrase":"","data_address":""}]}'
 
 POLY_CONF_DIR="/etc/polymarket"
 PANEL_ENV_FILE="$POLY_CONF_DIR/panel.env"
@@ -90,6 +101,8 @@ if ! id -u "$APP_USER" >/dev/null 2>&1; then
 fi
 mkdir -p "$APP_DIR"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+mkdir -p "$INSTANCE_DIR"
+chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR"
 mkdir -p "$POLY_CONF_DIR"
 
 step "Clone or update repository"
@@ -136,7 +149,7 @@ PY
 step "Prepare runtime config files"
 cat > "$PANEL_ENV_FILE" <<EOF
 POLY_APP_ROOT=$APP_DIR
-POLY_INSTANCE_ROOT=$APP_DIR
+POLY_INSTANCE_ROOT=$INSTANCE_DIR
 POLY_FORCE_SOURCE_SERVICES=1
 
 POLY_PANEL_HOST=$PANEL_BIND_HOST
@@ -200,13 +213,36 @@ chmod 440 "$SUDOERS_FILE"
 visudo -cf "$SUDOERS_FILE"
 
 step "Initialize account.json template"
-if [[ -f "$APP_DIR/$V2_DIR_REL/account.template.json" && ! -f "$APP_DIR/$V2_DIR_REL/account.json" ]]; then
-  cp "$APP_DIR/$V2_DIR_REL/account.template.json" "$APP_DIR/$V2_DIR_REL/account.json"
-  chown "$APP_USER:$APP_USER" "$APP_DIR/$V2_DIR_REL/account.json"
+mkdir -p \
+  "$INSTANCE_DIR/$V2_DIR_REL/copytrade" \
+  "$INSTANCE_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config" \
+  "$INSTANCE_DIR/$V3_DIR_REL/copytrade"
+
+copy_if_missing() {
+  local src="$1"
+  local dst="$2"
+  if [[ -f "$src" && ! -f "$dst" ]]; then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    chown "$APP_USER:$APP_USER" "$dst"
+  fi
+}
+
+copy_if_missing "$APP_DIR/$V2_ACCOUNT_TEMPLATE_REL" "$INSTANCE_DIR/$V2_ACCOUNT_REL"
+copy_if_missing "$APP_DIR/$V2_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V2_COPYTRADE_CONFIG_REL"
+copy_if_missing "$APP_DIR/$V2_GLOBAL_CONFIG_REL" "$INSTANCE_DIR/$V2_GLOBAL_CONFIG_REL"
+copy_if_missing "$APP_DIR/$V2_RUN_PARAMS_REL" "$INSTANCE_DIR/$V2_RUN_PARAMS_REL"
+copy_if_missing "$APP_DIR/$V2_STRATEGY_DEFAULTS_REL" "$INSTANCE_DIR/$V2_STRATEGY_DEFAULTS_REL"
+copy_if_missing "$APP_DIR/$V2_TRADING_YAML_REL" "$INSTANCE_DIR/$V2_TRADING_YAML_REL"
+copy_if_missing "$APP_DIR/$V3_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V3_COPYTRADE_CONFIG_REL"
+if [[ ! -f "$INSTANCE_DIR/$V3_ACCOUNTS_REL" ]]; then
+  mkdir -p "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
+  printf '%s\n' "$V3_DEFAULT_ACCOUNT_JSON" > "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
+  chown "$APP_USER:$APP_USER" "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
 fi
 
 step "Reset panel auth state (force first-login password change)"
-rm -f "$APP_DIR/panel/auth.json" || true
+rm -f "$INSTANCE_DIR/panel/auth.json" || true
 
 step "Create systemd services"
 cat > "$PANEL_SERVICE" <<EOF
@@ -241,7 +277,7 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/copytrade
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json
+ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config $INSTANCE_DIR/$V2_COPYTRADE_CONFIG_REL
 Restart=always
 RestartSec=5
 
@@ -261,7 +297,7 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl
+ExecStart=$APP_DIR/.venv/bin/python poly_maker_autorun.py --no-repl --global-config $INSTANCE_DIR/$V2_GLOBAL_CONFIG_REL --strategy-config $INSTANCE_DIR/$V2_STRATEGY_DEFAULTS_REL --run-config-template $INSTANCE_DIR/$V2_RUN_PARAMS_REL
 Restart=always
 RestartSec=5
 
@@ -281,7 +317,7 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR/$V3_DIR_REL
 EnvironmentFile=$PANEL_ENV_FILE
 EnvironmentFile=$TRADING_ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config copytrade_config.json
+ExecStart=$APP_DIR/.venv/bin/python copytrade_run.py --config $INSTANCE_DIR/$V3_COPYTRADE_CONFIG_REL
 Restart=always
 RestartSec=5
 

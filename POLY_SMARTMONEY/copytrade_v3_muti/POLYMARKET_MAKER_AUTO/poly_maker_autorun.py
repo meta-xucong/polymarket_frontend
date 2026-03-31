@@ -2504,6 +2504,15 @@ class AutoRunManager:
         self._buy_pause_keep_snapshot: set[str] = set()
         self._title_blacklist_finalized_no_position: set[str] = set()
         self._log_throttle_ts: Dict[str, float] = {}
+        self._copytrade_log_summary_interval_sec: float = 300.0
+        self._copytrade_token_log_state: Dict[str, Any] = {
+            "last_counts": None,
+            "last_summary_ts": 0.0,
+        }
+        self._copytrade_sell_log_state: Dict[str, Any] = {
+            "last_counts": None,
+            "last_summary_ts": 0.0,
+        }
         self._total_liquidation = TotalLiquidationManager(self.config, PROJECT_ROOT)
         
         # =====================
@@ -11430,6 +11439,7 @@ class AutoRunManager:
             return []
         topics: List[Dict[str, Any]] = []
         skipped_not_buy = 0
+        skipped_seeded_only = 0
         skipped_follow_cooldown = 0
         follow_cooldown_map = self._load_active_follow_cooldown_map()
         for item in raw_tokens:
@@ -11439,6 +11449,9 @@ class AutoRunManager:
                 continue
             if not bool(item.get("introduced_by_buy", False)):
                 skipped_not_buy += 1
+                continue
+            if bool(item.get("seeded_on_init", False)):
+                skipped_seeded_only += 1
                 continue
             token_id = item.get("token_id") or item.get("tokenId")
             if not token_id:
@@ -11464,11 +11477,13 @@ class AutoRunManager:
                     "last_seen": item.get("last_seen"),
                 }
             )
-        print(f"[COPYTRADE] 已读取 token {len(topics)} 条 | {path}")
-        if skipped_not_buy:
-            print(f"[COPYTRADE] 已跳过非BUY引入 token {skipped_not_buy} 条")
-        if skipped_follow_cooldown:
-            print(f"[COPYTRADE] 已跳过冷却中 token {skipped_follow_cooldown} 条")
+        self._log_copytrade_token_snapshot(
+            path=path,
+            token_count=len(topics),
+            skipped_not_buy=skipped_not_buy,
+            skipped_seeded_only=skipped_seeded_only,
+            skipped_follow_cooldown=skipped_follow_cooldown,
+        )
         return topics
 
     def _load_copytrade_sell_signals(self) -> Dict[str, Dict[str, Any]]:
@@ -11504,12 +11519,88 @@ class AutoRunManager:
             except (TypeError, ValueError):
                 entry["attempts"] = 0
             signals[str(token_id)] = entry
-        if signals:
-            preview = ", ".join(list(signals.keys())[:5])
-            print(f"[COPYTRADE] 已读取 sell 信号 {len(signals)} 条 preview={preview}")
-        if skipped:
-            print(f"[COPYTRADE] 已跳过未引入的 sell 信号 {skipped} 条")
+        self._log_copytrade_sell_snapshot(
+            signal_count=len(signals),
+            skipped=skipped,
+            preview=", ".join(list(signals.keys())[:5]),
+        )
         return signals
+
+    def _should_emit_copytrade_log(
+        self,
+        *,
+        state: Dict[str, Any],
+        counts: Tuple[Any, ...],
+    ) -> Tuple[bool, bool]:
+        now = time.time()
+        last_counts = state.get("last_counts")
+        changed = last_counts != counts
+        last_summary_ts = float(state.get("last_summary_ts") or 0.0)
+        summary_due = (
+            not changed
+            and now - last_summary_ts >= self._copytrade_log_summary_interval_sec
+        )
+        if changed or summary_due:
+            state["last_counts"] = counts
+            state["last_summary_ts"] = now
+        return changed, summary_due
+
+    def _log_copytrade_token_snapshot(
+        self,
+        *,
+        path: Path,
+        token_count: int,
+        skipped_not_buy: int,
+        skipped_seeded_only: int,
+        skipped_follow_cooldown: int,
+    ) -> None:
+        counts = (
+            str(path),
+            int(token_count),
+            int(skipped_not_buy),
+            int(skipped_seeded_only),
+            int(skipped_follow_cooldown),
+        )
+        changed, summary_due = self._should_emit_copytrade_log(
+            state=self._copytrade_token_log_state,
+            counts=counts,
+        )
+        if not changed and not summary_due:
+            return
+        prefix = "[COPYTRADE]" if changed else "[COPYTRADE][SUMMARY]"
+        print(f"{prefix} 已读取 token {token_count} 条 | {path}")
+        if skipped_not_buy:
+            print(f"{prefix} 已跳过非BUY引入 token {skipped_not_buy} 条")
+        if skipped_seeded_only:
+            print(f"{prefix} 已跳过启动前持仓 token {skipped_seeded_only} 条")
+        if skipped_follow_cooldown:
+            print(f"{prefix} 已跳过冷却中 token {skipped_follow_cooldown} 条")
+
+    def _log_copytrade_sell_snapshot(
+        self,
+        *,
+        signal_count: int,
+        skipped: int,
+        preview: str,
+    ) -> None:
+        counts = (
+            int(signal_count),
+            int(skipped),
+            str(preview or ""),
+        )
+        changed, summary_due = self._should_emit_copytrade_log(
+            state=self._copytrade_sell_log_state,
+            counts=counts,
+        )
+        if not changed and not summary_due:
+            return
+        prefix = "[COPYTRADE]" if changed else "[COPYTRADE][SUMMARY]"
+        if signal_count:
+            print(f"{prefix} 已读取 sell 信号 {signal_count} 条 preview={preview}")
+        elif changed or summary_due:
+            print(f"{prefix} 已读取 sell 信号 0 条")
+        if skipped:
+            print(f"{prefix} 已跳过未引入的 sell 信号 {skipped} 条")
 
     @staticmethod
     def _coerce_sell_signal_ts(entry: Dict[str, Any]) -> Optional[float]:
