@@ -339,11 +339,15 @@ EOF
   # Ensure log symlinks exist
   step "Ensure log symlinks exist"
   mkdir -p "$APP_DIR/$V2_DIR_REL/copytrade/logs"
-  if [[ ! -L "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log" ]]; then
-    ln -sf "$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_$(date +%Y%m%d).log" \
-           "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log"
-    echo "[OK] Created log symlink"
+  mkdir -p "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun"
+  ln -sf "$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_$(date +%Y%m%d).log" \
+         "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log"
+  latest_autorun_log="$(find "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun" -maxdepth 1 -type f -name 'autorun_main_*.log' | sort | tail -n 1)"
+  if [[ -n "$latest_autorun_log" ]]; then
+    ln -sf "$latest_autorun_log" \
+           "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/autorun_systemd.log"
   fi
+  echo "[OK] Refreshed log symlinks"
   
   # Ensure cron job for log links exists
   if [[ ! -f /etc/cron.daily/polymarket-log-links ]]; then
@@ -353,6 +357,11 @@ EOF
 APP_DIR="$APP_DIR"
 ln -sf "\$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_\$(date +%Y%m%d).log" \
        "\$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log" 2>/dev/null || true
+latest_autorun_log="\$(find \"\$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun\" -maxdepth 1 -type f -name 'autorun_main_*.log' | sort | tail -n 1)"
+if [[ -n "\$latest_autorun_log" ]]; then
+  ln -sf "\$latest_autorun_log" \
+         "\$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/autorun_systemd.log" 2>/dev/null || true
+fi
 EOF
     chmod +x /etc/cron.daily/polymarket-log-links
     echo "[OK] Created cron job for log links"

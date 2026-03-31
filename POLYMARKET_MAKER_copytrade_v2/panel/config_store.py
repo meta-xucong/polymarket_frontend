@@ -578,10 +578,21 @@ def _read_log_tail(path: Path, max_lines: int = 120) -> str:
     return "\n".join(lines[-max_lines:])
 
 
+def _read_log_tail_with_fallback(paths: List[Path], max_lines: int = 120) -> str:
+    for path in paths:
+        text = _read_log_tail(path, max_lines=max_lines)
+        if text:
+            return text
+    return ""
+
+
 def _latest_autorun_log_path() -> Path | None:
-    v2_root = resolve_v2_root()
-    log_dir = v2_root / "POLYMARKET_MAKER_AUTO" / "logs" / "autorun"
-    return _latest_log_path(log_dir, "autorun_main_*.log")
+    for base_root in (resolve_v2_root(), resolve_v2_source_root()):
+        log_dir = base_root / "POLYMARKET_MAKER_AUTO" / "logs" / "autorun"
+        path = _latest_log_path(log_dir, "autorun_main_*.log")
+        if path is not None:
+            return path
+    return None
 
 
 def get_runtime_payload() -> Dict[str, Any]:
@@ -590,12 +601,14 @@ def get_runtime_payload() -> Dict[str, Any]:
     copytrade_state = _read_json(_copytrade_state_paths()[0])
     active_tokens = tokens.get("tokens") if isinstance(tokens.get("tokens"), list) else []
     autorun_log_path = _latest_autorun_log_path()
-    v2_root = resolve_v2_root()
+    v2_roots = [resolve_v2_root(), resolve_v2_source_root()]
     return {
         "autorun_status": status,
         "active_token_count": len(active_tokens),
         "copytrade_updated_at": copytrade_state.get("updated_at"),
-        "copytrade_log_tail": _read_log_tail(v2_root / "copytrade" / "copytrade_systemd.log"),
+        "copytrade_log_tail": _read_log_tail_with_fallback(
+            [root / "copytrade" / "copytrade_systemd.log" for root in v2_roots]
+        ),
         "autorun_log_tail": _read_log_tail(autorun_log_path) if autorun_log_path else "",
     }
 

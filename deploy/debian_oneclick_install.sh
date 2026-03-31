@@ -329,6 +329,12 @@ step "Create log symlinks for panel"
 mkdir -p "$APP_DIR/$V2_DIR_REL/copytrade/logs"
 ln -sf "$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_$(date +%Y%m%d).log" \
        "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log"
+mkdir -p "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun"
+latest_autorun_log="$(find "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun" -maxdepth 1 -type f -name 'autorun_main_*.log' | sort | tail -n 1)"
+if [[ -n "$latest_autorun_log" ]]; then
+  ln -sf "$latest_autorun_log" \
+         "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/autorun_systemd.log"
+fi
 
 # Setup cron for daily log link update
 cat > /etc/cron.daily/polymarket-log-links <<EOF
@@ -337,6 +343,11 @@ cat > /etc/cron.daily/polymarket-log-links <<EOF
 APP_DIR="$APP_DIR"
 ln -sf "\$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_\$(date +%Y%m%d).log" \
        "\$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log" 2>/dev/null || true
+latest_autorun_log="\$(find \"\$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun\" -maxdepth 1 -type f -name 'autorun_main_*.log' | sort | tail -n 1)"
+if [[ -n "\$latest_autorun_log" ]]; then
+  ln -sf "\$latest_autorun_log" \
+         "\$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/autorun_systemd.log" 2>/dev/null || true
+fi
 EOF
 chmod +x /etc/cron.daily/polymarket-log-links
 
