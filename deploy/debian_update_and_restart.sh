@@ -164,6 +164,10 @@ if [[ ! -f "$PANEL_ENV_FILE" ]]; then
   exit 1
 fi
 
+mkdir -p "$POLY_CONF_DIR"
+chown root:"$APP_USER" "$POLY_CONF_DIR"
+chmod 2775 "$POLY_CONF_DIR"
+
 set -a
 source "$PANEL_ENV_FILE"
 set +a
@@ -280,6 +284,7 @@ PYTHONIOENCODING=utf-8
 EOF
 chmod 640 "$PANEL_ENV_FILE"
 chown root:"$APP_USER" "$PANEL_ENV_FILE"
+chmod 664 "$PANEL_ENV_FILE"
 
 # Check if trading.env has the new format (contains POLY_KEY)
 if [[ ! -f "$TRADING_ENV_FILE" ]] || ! grep -q "^POLY_KEY=" "$TRADING_ENV_FILE" 2>/dev/null; then
@@ -299,6 +304,8 @@ EOF
   chmod 640 "$TRADING_ENV_FILE"
   chown root:"$APP_USER" "$TRADING_ENV_FILE"
 fi
+chmod 664 "$TRADING_ENV_FILE"
+chown root:"$APP_USER" "$TRADING_ENV_FILE"
 
 if [[ "$UPDATE_SERVICE_FILES" == "1" ]]; then
   step "Rewrite systemd service files to current layout"

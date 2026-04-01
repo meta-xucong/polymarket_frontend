@@ -104,6 +104,8 @@ chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 mkdir -p "$INSTANCE_DIR"
 chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR"
 mkdir -p "$POLY_CONF_DIR"
+chown root:"$APP_USER" "$POLY_CONF_DIR"
+chmod 2775 "$POLY_CONF_DIR"
 
 step "Clone or update repository"
 if [[ -d "$APP_DIR/.git" ]]; then
@@ -183,6 +185,7 @@ EOF
 
 chmod 640 "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
 chown root:"$APP_USER" "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
+chmod 664 "$PANEL_ENV_FILE" "$TRADING_ENV_FILE"
 
 step "Grant panel user limited systemd control"
 SYSTEMCTL_BIN="$(command -v systemctl)"

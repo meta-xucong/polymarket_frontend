@@ -912,12 +912,12 @@ def _sync_to_trading_env(config: dict) -> None:
     import os
     import tempfile
     import shutil
-    
+
     env_path = Path("/etc/polymarket/trading.env")
-    
+
     # 确保目录存在
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     env_content = f"""# Trading configuration - auto generated from account.json
 POLY_HOST={config.get('POLY_HOST', 'https://clob.polymarket.com')}
 POLY_CHAIN_ID={config.get('POLY_CHAIN_ID', 137)}
@@ -929,7 +929,8 @@ POLY_API_SECRET={config.get('POLY_API_SECRET', '')}
 POLY_API_PASSPHRASE={config.get('POLY_API_PASSPHRASE', '')}
 POLY_DATA_ADDRESS={config.get('POLY_DATA_ADDRESS', '')}
 """
-    # 使用临时文件原子写入，避免权限问题
+
+    # 使用临时文件原子写入；若这里失败，必须向上抛错，避免“面板保存成功但服务配置未生效”。
     try:
         fd, temp_path = tempfile.mkstemp(dir=str(env_path.parent), prefix='.trading.env.')
         try:
@@ -939,4 +940,4 @@ POLY_DATA_ADDRESS={config.get('POLY_DATA_ADDRESS', '')}
         os.chmod(temp_path, 0o640)
         shutil.move(temp_path, str(env_path))
     except Exception as e:
-        print(f"[WARN] Failed to update trading.env: {e}")
+        raise RuntimeError(f"failed to update trading.env: {e}") from e
