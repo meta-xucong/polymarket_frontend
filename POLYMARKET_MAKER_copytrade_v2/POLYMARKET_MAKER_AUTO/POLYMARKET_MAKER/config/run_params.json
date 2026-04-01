@@ -22,6 +22,8 @@
   "buy_price_threshold": null,
   "drop_window_minutes": 30,
   "drop_pct": 0.01,
+  "buy_confirm_hold_seconds": 10,
+  "buy_confirm_required_hits": 3,
   "profit_pct": 0.003,
   "enable_incremental_drop_pct": false,
   "incremental_drop_pct_step": 0.002,

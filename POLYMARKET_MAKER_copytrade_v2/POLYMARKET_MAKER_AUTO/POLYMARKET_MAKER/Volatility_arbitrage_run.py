@@ -2877,6 +2877,12 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         min_buy_price = 0.01  # 默认最低买入价 0.01
     drop_window = _coerce_float(run_cfg.get("drop_window_minutes")) or 10.0
     drop_pct = _normalize_ratio(run_cfg.get("drop_pct"), 0.01)
+    buy_confirm_hold_seconds = max(
+        0.0, float(_coerce_float(run_cfg.get("buy_confirm_hold_seconds")) or 10.0)
+    )
+    buy_confirm_required_hits = max(
+        1, int(_coerce_float(run_cfg.get("buy_confirm_required_hits")) or 3)
+    )
     profit_pct = _normalize_ratio(run_cfg.get("profit_pct"), 0.003)
     profit_pct = _enforce_profit_floor(profit_pct)
 
@@ -2962,6 +2968,14 @@ def main(run_config: Optional[Dict[str, Any]] = None):
                 profit_pct = resume_profit_pct
 
     print(f"[INIT] 买入价格上限: {max_buy_price:.4f}（价格>=此值时不买入）")
+    print(
+        "[INIT] 买入跌破确认: "
+        f"{buy_confirm_required_hits} 次 * {buy_confirm_hold_seconds:.1f}s"
+    )
+    print(
+        "[INIT] 当前买入需连续跌破阈值 "
+        f"{buy_confirm_required_hits * buy_confirm_hold_seconds:.1f} 秒后才会发出 BUY。"
+    )
 
     no_event_exit_minutes = _coerce_float(run_cfg.get("no_event_exit_minutes"))
     if no_event_exit_minutes is None:
@@ -3084,6 +3098,8 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         disable_sell_signals=True,
         enable_incremental_drop_pct=enable_incremental_drop_pct,
         incremental_drop_pct_step=incremental_drop_pct_step,
+        buy_confirm_hold_seconds=buy_confirm_hold_seconds,
+        buy_confirm_required_hits=buy_confirm_required_hits,
         min_market_order_size=effective_min_order_size,
     )
     strategy = VolArbStrategy(cfg)

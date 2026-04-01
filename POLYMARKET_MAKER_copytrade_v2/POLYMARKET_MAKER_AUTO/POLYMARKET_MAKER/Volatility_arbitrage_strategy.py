@@ -41,6 +41,10 @@ class StrategyConfig:
     # 轻量防抖：同一方向的“待确认”状态下不重复发信号
     disable_duplicate_signal: bool = True
 
+    # 买入确认：要求价格连续处于触发区间内若干秒，并累计达到指定次数
+    buy_confirm_hold_seconds: float = 10.0
+    buy_confirm_required_hits: int = 3
+
     # maker 模式下可禁用 SELL 信号，由上游自行处理退出
     disable_sell_signals: bool = False
 
@@ -103,6 +107,11 @@ class VolArbStrategy:
         self._last_best_ask: Optional[float] = None
         self._last_best_bid: Optional[float] = None
 
+        # 买入确认状态：价格必须持续留在触发区间内才会累计确认命中
+        self._buy_confirm_active_since_ts: Optional[float] = None
+        self._buy_confirm_hits: int = 0
+        self._buy_confirm_reason: Optional[str] = None
+
         # 状态字段
         self._last_buy_price: Optional[float] = None
         self._last_sell_price: Optional[float] = None
@@ -164,6 +173,7 @@ class VolArbStrategy:
         if self._awaiting == ActionType.BUY and self.cfg.disable_duplicate_signal:
             return None  # 等待上游确认，不重复发 BUY
 
+        current_ts = float(ts if ts is not None else time.time())
         drop_trigger = False
         drop_ratio: Optional[float] = None
         window_high: Optional[float] = self._window_high_price
@@ -178,11 +188,25 @@ class VolArbStrategy:
         )
 
         if not drop_trigger and not threshold_trigger:
+            self._reset_buy_confirm()
             return None
 
         # 买入价格上限检查：如果当前价格超过上限，不买入
         if self.cfg.max_buy_price is not None and best_bid >= self.cfg.max_buy_price:
+            self._reset_buy_confirm()
             return None  # 价格过高，不买入
+
+        confirm_state = self._advance_buy_confirm(
+            ts=current_ts,
+            drop_trigger=drop_trigger,
+            threshold_trigger=threshold_trigger,
+            drop_ratio=drop_ratio,
+            window_high=window_high,
+            drop_price=drop_price,
+            best_bid=best_bid,
+        )
+        if not confirm_state["ready"]:
+            return None
 
         reasons = []
         extra = {
@@ -190,6 +214,10 @@ class VolArbStrategy:
             "drop_window_minutes": self.cfg.drop_window_minutes,
             "drop_triggered": drop_trigger,
             "threshold_triggered": threshold_trigger,
+            "buy_confirm_hold_seconds": self.cfg.buy_confirm_hold_seconds,
+            "buy_confirm_required_hits": self.cfg.buy_confirm_required_hits,
+            "buy_confirm_elapsed_seconds": confirm_state["elapsed_seconds"],
+            "buy_confirm_hits": confirm_state["hits"],
         }
 
 
@@ -219,6 +247,7 @@ class VolArbStrategy:
         )
         self._last_signal = ActionType.BUY
         self._awaiting = ActionType.BUY  # 必须等待上游 on_buy_filled() 确认
+        self._reset_buy_confirm()
         return act
 
     def _maybe_sell(self, best_bid: float, ts: Optional[float]) -> Optional[Action]:
@@ -399,6 +428,7 @@ class VolArbStrategy:
         self._state = "LONG"
         self._awaiting = None
         self._last_reject_reason = None
+        self._reset_buy_confirm()
 
     def on_sell_filled(
         self,
@@ -453,6 +483,7 @@ class VolArbStrategy:
         if remaining_size is None:
             self._price_history.clear()
             self._reset_drop_metrics()
+            self._reset_buy_confirm()
 
         if avg_price is not None:
             self._last_sell_price = avg_price
@@ -469,6 +500,7 @@ class VolArbStrategy:
         """上游在下单失败/被拒绝时回调，解除“待确认”以便重新发信号。"""
         self._awaiting = None
         self._last_reject_reason = reason
+        self._reset_buy_confirm()
 
     def sync_position(
         self, total_position: Optional[float], *, ref_price: Optional[float] = None
@@ -499,6 +531,7 @@ class VolArbStrategy:
             self._awaiting = None
             self._entry_price = None
             self._last_reject_reason = None
+            self._reset_buy_confirm()
             self._maybe_increment_drop_pct()
             return
 
@@ -552,6 +585,8 @@ class VolArbStrategy:
         enable_incremental_drop_pct: Optional[bool] = None,
         incremental_drop_pct_step: Optional[float] = None,
         incremental_drop_pct_cap: Optional[float] = None,
+        buy_confirm_hold_seconds: Optional[float] = None,
+        buy_confirm_required_hits: Optional[int] = None,
         min_market_order_size: Optional[float] = None,
     ) -> None:
         if buy_price_threshold is not None:
@@ -580,6 +615,12 @@ class VolArbStrategy:
             self.cfg.incremental_drop_pct_step = float(incremental_drop_pct_step)
         if incremental_drop_pct_cap is not None:
             self.cfg.incremental_drop_pct_cap = float(incremental_drop_pct_cap)
+        if buy_confirm_hold_seconds is not None:
+            self.cfg.buy_confirm_hold_seconds = max(float(buy_confirm_hold_seconds), 0.0)
+            self._reset_buy_confirm()
+        if buy_confirm_required_hits is not None:
+            self.cfg.buy_confirm_required_hits = max(1, int(buy_confirm_required_hits))
+            self._reset_buy_confirm()
         if min_market_order_size is not None:
             self.cfg.min_market_order_size = min_market_order_size
             self._min_market_order_size = self._normalize_min_market_order_size(
@@ -620,6 +661,13 @@ class VolArbStrategy:
                 "current_drop_ratio": self._current_drop_ratio,
                 "window_seconds": self._history_window_seconds,
             },
+            "buy_confirm": {
+                "active_since_ts": self._buy_confirm_active_since_ts,
+                "hits": self._buy_confirm_hits,
+                "required_hits": self.cfg.buy_confirm_required_hits,
+                "hold_seconds": self.cfg.buy_confirm_hold_seconds,
+                "reason": self._buy_confirm_reason,
+            },
             "config": {
                 "token_id": self.cfg.token_id,
                 "buy_price_threshold": self.cfg.buy_price_threshold,
@@ -633,6 +681,8 @@ class VolArbStrategy:
                 "enable_incremental_drop_pct": self.cfg.enable_incremental_drop_pct,
                 "incremental_drop_pct_step": self.cfg.incremental_drop_pct_step,
                 "incremental_drop_pct_cap": self.cfg.incremental_drop_pct_cap,
+                "buy_confirm_hold_seconds": self.cfg.buy_confirm_hold_seconds,
+                "buy_confirm_required_hits": self.cfg.buy_confirm_required_hits,
                 "min_market_order_size": self._min_market_order_size,
             },
         }
@@ -663,3 +713,56 @@ class VolArbStrategy:
         except (TypeError, ValueError):
             return None
         return numeric if numeric > 0 else None
+
+    def _reset_buy_confirm(self) -> None:
+        self._buy_confirm_active_since_ts = None
+        self._buy_confirm_hits = 0
+        self._buy_confirm_reason = None
+
+    def _advance_buy_confirm(
+        self,
+        *,
+        ts: float,
+        drop_trigger: bool,
+        threshold_trigger: bool,
+        drop_ratio: Optional[float],
+        window_high: Optional[float],
+        drop_price: float,
+        best_bid: float,
+    ) -> Dict[str, Any]:
+        hold_seconds = max(float(getattr(self.cfg, "buy_confirm_hold_seconds", 0.0) or 0.0), 0.0)
+        required_hits = max(int(getattr(self.cfg, "buy_confirm_required_hits", 1) or 1), 1)
+
+        if hold_seconds <= 0 or required_hits <= 1:
+            self._buy_confirm_active_since_ts = ts
+            self._buy_confirm_hits = required_hits
+            self._buy_confirm_reason = "immediate"
+            return {
+                "ready": True,
+                "elapsed_seconds": hold_seconds,
+                "hits": required_hits,
+            }
+
+        if self._buy_confirm_active_since_ts is None:
+            self._buy_confirm_active_since_ts = ts
+
+        elapsed_seconds = max(ts - float(self._buy_confirm_active_since_ts), 0.0)
+        hits = min(int(elapsed_seconds // hold_seconds), required_hits)
+        self._buy_confirm_hits = hits
+
+        reasons = []
+        if drop_trigger and drop_ratio is not None and window_high is not None:
+            reasons.append(
+                f"drop({drop_ratio:.4f}) from high({window_high:.5f}) via price({drop_price:.5f})"
+            )
+        if threshold_trigger and self.cfg.buy_price_threshold is not None:
+            reasons.append(
+                f"best_bid({best_bid:.5f}) <= buy_threshold({self.cfg.buy_price_threshold:.5f})"
+            )
+        self._buy_confirm_reason = "; ".join(reasons) or "buy confirm active"
+
+        return {
+            "ready": hits >= required_hits,
+            "elapsed_seconds": elapsed_seconds,
+            "hits": hits,
+        }
