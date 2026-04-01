@@ -217,12 +217,14 @@ mkdir -p \
   "$INSTANCE_DIR/$V2_DIR_REL/copytrade" \
   "$INSTANCE_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/POLYMARKET_MAKER/config" \
   "$INSTANCE_DIR/$V3_DIR_REL/copytrade"
+chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR"
 
 copy_if_missing() {
   local src="$1"
   local dst="$2"
   if [[ -f "$src" && ! -f "$dst" ]]; then
     mkdir -p "$(dirname "$dst")"
+    chown -R "$APP_USER:$APP_USER" "$(dirname "$dst")"
     cp "$src" "$dst"
     chown "$APP_USER:$APP_USER" "$dst"
   fi
@@ -237,11 +239,14 @@ copy_if_missing "$APP_DIR/$V2_TRADING_YAML_REL" "$INSTANCE_DIR/$V2_TRADING_YAML_
 copy_if_missing "$APP_DIR/$V3_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V3_COPYTRADE_CONFIG_REL"
 if [[ ! -f "$INSTANCE_DIR/$V3_ACCOUNTS_REL" ]]; then
   mkdir -p "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
+  chown -R "$APP_USER:$APP_USER" "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
   printf '%s\n' "$V3_DEFAULT_ACCOUNT_JSON" > "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
   chown "$APP_USER:$APP_USER" "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
 fi
 
 step "Reset panel auth state (force first-login password change)"
+mkdir -p "$INSTANCE_DIR/panel"
+chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR/panel"
 rm -f "$INSTANCE_DIR/panel/auth.json" || true
 
 step "Create systemd services"

@@ -202,6 +202,7 @@ copy_if_missing() {
   local dst="$2"
   if [[ -f "$src" && ! -f "$dst" ]]; then
     mkdir -p "$(dirname "$dst")"
+    chown -R "$APP_USER:$APP_USER" "$(dirname "$dst")"
     cp "$src" "$dst"
     chown "$APP_USER:$APP_USER" "$dst"
   fi
@@ -213,6 +214,7 @@ copy_runtime_if_missing() {
   local dst="$INSTANCE_DIR/$rel"
   if [[ -f "$src" && ! -f "$dst" ]]; then
     mkdir -p "$(dirname "$dst")"
+    chown -R "$APP_USER:$APP_USER" "$(dirname "$dst")"
     cp "$src" "$dst"
     chown "$APP_USER:$APP_USER" "$dst"
   fi
@@ -227,6 +229,7 @@ copy_if_missing "$APP_DIR/$V2_TRADING_YAML_REL" "$INSTANCE_DIR/$V2_TRADING_YAML_
 copy_if_missing "$APP_DIR/$V3_COPYTRADE_CONFIG_REL" "$INSTANCE_DIR/$V3_COPYTRADE_CONFIG_REL"
 if [[ ! -f "$INSTANCE_DIR/$V3_ACCOUNTS_REL" ]]; then
   mkdir -p "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
+  chown -R "$APP_USER:$APP_USER" "$(dirname "$INSTANCE_DIR/$V3_ACCOUNTS_REL")"
   printf '%s\n' "$V3_DEFAULT_ACCOUNT_JSON" > "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
   chown "$APP_USER:$APP_USER" "$INSTANCE_DIR/$V3_ACCOUNTS_REL"
 fi
@@ -234,6 +237,7 @@ copy_runtime_if_missing "$PANEL_AUTH_REL"
 copy_runtime_if_missing "$V2_STATUS_REL"
 copy_runtime_if_missing "$V2_TOKENS_REL"
 copy_runtime_if_missing "$V2_COPYTRADE_STATE_REL"
+chown -R "$APP_USER:$APP_USER" "$INSTANCE_DIR"
 
 if [[ "$INSTANCE_DIR" != "$APP_DIR" ]]; then
   step "Clean tracked config files from git worktree"
