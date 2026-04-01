@@ -395,6 +395,8 @@ EOF
   step "Ensure log symlinks exist"
   mkdir -p "$APP_DIR/$V2_DIR_REL/copytrade/logs"
   mkdir -p "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun"
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR/$V2_DIR_REL/copytrade/logs"
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs"
   ln -sf "$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_$(date +%Y%m%d).log" \
          "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log"
   latest_autorun_log="$(find "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun" -maxdepth 1 -type f -name 'autorun_main_*.log' | sort | tail -n 1)"

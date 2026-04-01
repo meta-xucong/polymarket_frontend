@@ -619,7 +619,18 @@ def get_runtime_payload() -> Dict[str, Any]:
         "copytrade_log_tail": _read_log_tail(copytrade_log_path)
         if copytrade_log_path
         else _read_log_tail_with_fallback([root / "copytrade" / "copytrade_systemd.log" for root in v2_roots]),
-        "autorun_log_tail": _read_log_tail(autorun_log_path) if autorun_log_path else "",
+        "autorun_log_tail": _read_log_tail(autorun_log_path)
+        if autorun_log_path
+        else _read_log_tail_with_fallback(
+            [
+                root / "POLYMARKET_MAKER_AUTO" / "autorun_systemd.log"
+                for root in v2_roots
+            ]
+            + [
+                root / "POLYMARKET_MAKER_AUTO" / "logs" / "autorun" / "error_log.txt"
+                for root in v2_roots
+            ]
+        ),
     }
 
 

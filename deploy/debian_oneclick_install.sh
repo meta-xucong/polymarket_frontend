@@ -332,9 +332,11 @@ EOF
 
 step "Create log symlinks for panel"
 mkdir -p "$APP_DIR/$V2_DIR_REL/copytrade/logs"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/$V2_DIR_REL/copytrade/logs"
 ln -sf "$APP_DIR/$V2_DIR_REL/copytrade/logs/copytrade_$(date +%Y%m%d).log" \
        "$APP_DIR/$V2_DIR_REL/copytrade/copytrade_systemd.log"
 mkdir -p "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs"
 latest_autorun_log="$(find "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun" -maxdepth 1 -type f -name 'autorun_main_*.log' | sort | tail -n 1)"
 if [[ -n "$latest_autorun_log" ]]; then
   ln -sf "$latest_autorun_log" \
