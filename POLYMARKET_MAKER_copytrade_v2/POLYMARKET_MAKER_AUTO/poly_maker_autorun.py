@@ -13772,7 +13772,7 @@ def _run_with_local_supervisor(args: argparse.Namespace, argv: Optional[List[str
 
         cmd = [sys.executable, str(script_path), *worker_argv]
         start_ts = time.time()
-        proc = subprocess.Popen(cmd, cwd=str(script_path.parent))
+        proc = subprocess.Popen(cmd, cwd=str(script_path.parent), env=os.environ.copy())
 
         while proc.poll() is None:
             if stop_file and Path(stop_file).exists():

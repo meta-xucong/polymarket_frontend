@@ -58,6 +58,37 @@ def test_instance_mode_defaults_copytrade_paths(monkeypatch, tmp_path):
     assert cfg.stoploss_reentry_state_backup_path == v2_root / "copytrade" / "stoploss_reentry_state.bak.json"
 
 
+def test_local_supervisor_passes_instance_env_to_worker(monkeypatch, tmp_path):
+    stop_file = tmp_path / "stop"
+    stop_file.write_text("stop", encoding="utf-8")
+
+    captured = {}
+
+    class _Proc:
+        def __init__(self):
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+    def _fake_popen(cmd, cwd=None, env=None, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = cwd
+        captured["env"] = dict(env or {})
+        return _Proc()
+
+    monkeypatch.setenv("POLY_INSTANCE_ROOT", str(tmp_path / "instance-root"))
+    monkeypatch.setattr(autorun_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(autorun_mod, "_cleanup_orphan_strategy_processes", lambda: None)
+
+    args = types.SimpleNamespace(no_repl=True, supervised_worker=False, stop_file=str(stop_file))
+    autorun_mod._run_with_local_supervisor(args, [])
+
+    assert captured["env"]["POLY_INSTANCE_ROOT"] == str(tmp_path / "instance-root")
+    assert captured["cwd"] == str(Path(autorun_mod.__file__).resolve().parent)
+    assert "--supervised-worker" in captured["cmd"]
+
+
 def test_compute_new_topics_dedupes_token_ids():
     latest = [
         {"topic_id": "t1"},
