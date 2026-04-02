@@ -80,7 +80,11 @@ dnf install -y \
   git curl ca-certificates openssl sudo \
   python3 python3-pip python3-devel \
   gcc gcc-c++ make libffi-devel openssl-devel \
-  cronie nginx
+  cronie
+
+if [[ "$ENABLE_NGINX" == "1" ]]; then
+  dnf install -y nginx
+fi
 
 step "Ensure services required by runtime are available"
 systemctl enable --now crond
