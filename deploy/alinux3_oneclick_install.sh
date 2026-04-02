@@ -22,6 +22,7 @@ REPO_BRANCH="${REPO_BRANCH:-main}"
 PANEL_PORT="${PANEL_PORT:-8080}"
 ENABLE_NGINX="${ENABLE_NGINX:-0}"
 PANEL_BIND_HOST="${PANEL_BIND_HOST:-}"
+PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3.11}"
 
 if [[ -z "$PANEL_BIND_HOST" ]]; then
   if [[ "$ENABLE_NGINX" == "1" ]]; then
@@ -78,7 +79,7 @@ step "Install required software"
 dnf makecache
 dnf install -y \
   git curl ca-certificates openssl sudo \
-  python3 python3-pip python3-devel \
+  python3.11 python3.11-devel \
   gcc gcc-c++ make libffi-devel openssl-devel \
   cronie
 
@@ -108,10 +109,11 @@ fi
 
 step "Create Python virtual environment"
 if [[ ! -d "$APP_DIR/.venv" ]]; then
-  run_as_app python3 -m venv "$APP_DIR/.venv"
+  run_as_app "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 fi
 
 step "Install Python dependencies"
+export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-180}"
 run_as_app "$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
 run_as_app "$APP_DIR/.venv/bin/pip" install \
   requests \
