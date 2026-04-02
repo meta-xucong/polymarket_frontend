@@ -5450,16 +5450,46 @@ class AutoRunManager:
                     state_dirty = True
                 continue
 
-            force_stoploss_on_wide_spread = bool(is_wide_spread) and self._should_force_stoploss_on_wide_spread(
+            force_stoploss_candidate = bool(is_wide_spread) and self._should_force_stoploss_on_wide_spread(
                 drawdown_pct=float(drawdown),
                 threshold_pct=float(threshold),
             )
+            force_stoploss_on_wide_spread = False
 
-            if force_stoploss_on_wide_spread:
-                if self._reset_wide_spread_stoploss_confirmation(state):
-                    state_dirty = True
+            if force_stoploss_candidate:
+                state["stoploss_confirm_hits"] = 0
+                hits, elapsed, ready = self._advance_wide_spread_stoploss_confirmation(
+                    state,
+                    now=now,
+                )
                 state["last_error"] = (
-                    "wide spread stoploss force trigger "
+                    f"wide spread force confirm {hits}/"
+                    f"{int(self.config.stoploss_wide_spread_confirm_rounds)} "
+                    f"elapsed={elapsed:.0f}s/"
+                    f"{float(self.config.stoploss_wide_spread_confirm_window_sec):.0f}s "
+                    f"drawdown={abs(float(drawdown)):.3f} "
+                    f"threshold={float(threshold):.3f} "
+                    f"multiplier={float(self.config.stoploss_wide_spread_force_trigger_multiplier):.2f}"
+                )
+                print(
+                    f"[STOPLOSS][WIDE_SPREAD][FORCE_CONFIRM] token={token_id[:20]}... "
+                    f"bid={float(state.get('last_stoploss_spread_bid') or 0.0):.4f} "
+                    f"ask={float(state.get('last_stoploss_spread_ask') or 0.0):.4f} "
+                    f"spread={float(state.get('last_stoploss_spread_pct') or 0.0):.3f} "
+                    f"drawdown={abs(float(drawdown)):.3f} "
+                    f"threshold={float(threshold):.3f} "
+                    f"multiplier={float(self.config.stoploss_wide_spread_force_trigger_multiplier):.2f} "
+                    f"hits={hits}/{int(self.config.stoploss_wide_spread_confirm_rounds)} "
+                    f"elapsed={elapsed:.0f}s/"
+                    f"{float(self.config.stoploss_wide_spread_confirm_window_sec):.0f}s "
+                    f"ready={ready}"
+                )
+                state_dirty = True
+                if not ready:
+                    continue
+                force_stoploss_on_wide_spread = True
+                state["last_error"] = (
+                    "wide spread stoploss force trigger confirmed "
                     f"drawdown={abs(float(drawdown)):.3f} "
                     f"threshold={float(threshold):.3f} "
                     f"multiplier={float(self.config.stoploss_wide_spread_force_trigger_multiplier):.2f}"
@@ -5473,7 +5503,6 @@ class AutoRunManager:
                     f"threshold={float(threshold):.3f} "
                     f"multiplier={float(self.config.stoploss_wide_spread_force_trigger_multiplier):.2f}"
                 )
-                state_dirty = True
             elif is_wide_spread:
                 state["stoploss_confirm_hits"] = 0
                 hits, elapsed, ready = self._advance_wide_spread_stoploss_confirmation(
