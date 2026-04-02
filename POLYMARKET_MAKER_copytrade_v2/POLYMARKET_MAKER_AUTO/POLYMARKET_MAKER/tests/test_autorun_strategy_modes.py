@@ -4566,6 +4566,21 @@ def test_filter_refillable_tokens_skips_terminal_orphan_even_with_refillable_exi
     assert refillable == []
 
 
+def test_pending_wide_spread_stoploss_confirmation_claims_runtime_owner(tmp_path):
+    manager = _build_stoploss_manager(tmp_path)
+    manager._stoploss_reentry_states["t1"] = manager._normalize_stoploss_reentry_state_record(
+        "t1",
+        {
+            "state": "NORMAL_MAKER",
+            "wide_spread_stoploss_confirm_hits": 1,
+            "wide_spread_stoploss_first_ts": 123.0,
+        },
+    )
+
+    assert manager._has_stoploss_runtime_owner("t1") is True
+    assert manager._resolve_runtime_owner("t1") == "stoploss"
+
+
 def test_orphan_probe_uses_official_terminal_market_state_to_stop_retries(tmp_path):
     cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
     manager = _build_manager(cfg)
@@ -5212,6 +5227,53 @@ def test_stoploss_wide_spread_triggers_after_confirmation_window(tmp_path):
     assert payload["data"]["spread_extra_ticks"] == 0
     assert abs(float(payload["data"]["base_trigger_price"]) - 0.95) < 1e-9
     assert abs(float(payload["data"]["trigger_price"]) - 0.95) < 1e-9
+
+
+def test_stoploss_wide_spread_force_trigger_bypasses_confirmation_window(tmp_path):
+    manager = _build_stoploss_manager(
+        tmp_path,
+        stoploss_overrides={
+            "min_age_minutes": 0.0,
+            "new_position_hard_grace_minutes": 5.0,
+            "new_position_spread_grace_minutes": 15.0,
+        },
+    )
+    now = time.time()
+    manager.config.stoploss_confirm_rounds = 1
+    manager.config.stoploss_wide_spread_confirm_rounds = 3
+    manager.config.stoploss_wide_spread_confirm_window_sec = 30.0
+    manager.config.stoploss_wide_spread_force_trigger_multiplier = 2.0
+    liq_calls = []
+    manager._total_liquidation.liquidate_single_token_taker = (  # type: ignore[attr-defined]
+        lambda *args, **kwargs: liq_calls.append(kwargs) or {
+            "ok": True,
+            "before_size": 10.0,
+            "after_size": 0.0,
+            "requested_size": kwargs.get("target_size", 10.0),
+            "reason": kwargs.get("reason"),
+        }
+    )
+    old_fetch = autorun_mod._fetch_position_rows_from_data_api
+    autorun_mod._fetch_position_rows_from_data_api = lambda address: (  # type: ignore[assignment]
+        [{"asset": "t1", "size": 10.0, "avgPrice": 1.0, "curPrice": 0.89}],
+        "ok",
+    )
+    try:
+        manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now, "tick_size": 0.01}
+        manager._run_stoploss_check(now)
+        manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now + 901.0, "tick_size": 0.01}
+        manager._run_stoploss_check(now + 901.0)
+    finally:
+        autorun_mod._fetch_position_rows_from_data_api = old_fetch  # type: ignore[assignment]
+
+    assert len(liq_calls) == 1
+    assert liq_calls[0].get("reason") == "STOPLOSS_REENTRY"
+    state = manager._stoploss_reentry_states["t1"]
+    assert int(state.get("wide_spread_stoploss_confirm_hits") or 0) == 0
+    journal_path = manager.config.data_dir / "stoploss_event_journal.jsonl"
+    payload = json.loads(journal_path.read_text(encoding="utf-8").strip().splitlines()[0])
+    assert payload["data"]["wide_spread_force_bypass"] is True
+    assert abs(float(payload["data"]["threshold_pct"]) - 0.05) < 1e-9
 
 
 def test_stoploss_pending_confirm_schedules_retry_before_escalation(tmp_path):
