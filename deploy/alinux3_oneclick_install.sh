@@ -12,15 +12,15 @@ set -euo pipefail
 #   APP_DIR=/opt/polymarket_frontend
 #   REPO_URL=https://github.com/meta-xucong/polymarket_frontend.git
 #   REPO_BRANCH=main
-#   PANEL_PORT=8787
-#   ENABLE_NGINX=1
+#   PANEL_PORT=8080
+#   ENABLE_NGINX=0
 
 APP_USER="${APP_USER:-polymarket}"
 APP_DIR="${APP_DIR:-/opt/polymarket_frontend}"
 REPO_URL="${REPO_URL:-https://github.com/meta-xucong/polymarket_frontend.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
-PANEL_PORT="${PANEL_PORT:-8787}"
-ENABLE_NGINX="${ENABLE_NGINX:-1}"
+PANEL_PORT="${PANEL_PORT:-8080}"
+ENABLE_NGINX="${ENABLE_NGINX:-0}"
 PANEL_BIND_HOST="${PANEL_BIND_HOST:-}"
 
 if [[ -z "$PANEL_BIND_HOST" ]]; then
