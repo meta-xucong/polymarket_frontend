@@ -317,6 +317,55 @@ def test_health_check_resubscribes_stale_subscribed_token_when_bootstrap_fails(t
     assert calls == [[token_id]]
 
 
+def test_health_check_recovers_stale_subscribed_token_outside_ws_cache_lock(tmp_path):
+    cfg = GlobalConfig.from_dict({})
+    manager = _build_manager(cfg)
+    now = time.time()
+    token_id = "token-stale"
+    manager._ws_token_ids = [token_id]
+    manager._ws_cache[token_id] = {
+        "updated_at": now - (autorun_mod.WS_STALE_RESUBSCRIBE_AFTER_SEC + 5.0),
+        "best_bid": 0.4,
+        "best_ask": 0.5,
+        "seq": 1,
+    }
+
+    original_lock = manager._ws_cache_lock
+
+    class TrackingLock:
+        def __init__(self, inner):
+            self._inner = inner
+            self.depth = 0
+            self.max_depth = 0
+
+        def __enter__(self):
+            self._inner.acquire()
+            self.depth += 1
+            self.max_depth = max(self.max_depth, self.depth)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.depth -= 1
+            self._inner.release()
+            return False
+
+    tracking_lock = TrackingLock(original_lock)
+    manager._ws_cache_lock = tracking_lock  # type: ignore[assignment]
+
+    depths_seen = []
+
+    def _recover(token, *, reason):
+        depths_seen.append(tracking_lock.depth)
+        return True
+
+    manager._recover_shared_ws_token = _recover  # type: ignore[assignment]
+
+    manager._health_check()
+
+    assert depths_seen == [0]
+    assert tracking_lock.max_depth == 1
+
+
 def test_sync_startup_sell_with_position_triggers_exit_cleanup_path(tmp_path):
     copytrade_dir = tmp_path / "copytrade"
     copytrade_dir.mkdir(parents=True, exist_ok=True)
