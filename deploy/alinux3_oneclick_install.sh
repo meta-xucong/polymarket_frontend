@@ -108,6 +108,13 @@ else
 fi
 
 step "Create Python virtual environment"
+if [[ -x "$APP_DIR/.venv/bin/python" ]]; then
+  current_venv_python="$("$APP_DIR/.venv/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  target_python="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  if [[ "$current_venv_python" != "$target_python" ]]; then
+    rm -rf "$APP_DIR/.venv"
+  fi
+fi
 if [[ ! -d "$APP_DIR/.venv" ]]; then
   run_as_app "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 fi
