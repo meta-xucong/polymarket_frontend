@@ -5191,8 +5191,8 @@ def test_stoploss_wide_spread_after_grace_requires_confirmation_window(tmp_path)
         tmp_path,
         stoploss_overrides={
             "min_age_minutes": 0.0,
-            "new_position_hard_grace_minutes": 5.0,
-            "new_position_spread_grace_minutes": 15.0,
+            "new_position_hard_grace_minutes": 0.0,
+            "new_position_spread_grace_minutes": 0.0,
         },
     )
     now = time.time()
@@ -5235,8 +5235,8 @@ def test_stoploss_wide_spread_triggers_after_confirmation_window(tmp_path):
         tmp_path,
         stoploss_overrides={
             "min_age_minutes": 0.0,
-            "new_position_hard_grace_minutes": 5.0,
-            "new_position_spread_grace_minutes": 15.0,
+            "new_position_hard_grace_minutes": 0.0,
+            "new_position_spread_grace_minutes": 0.0,
         },
     )
     now = time.time()
@@ -5278,13 +5278,13 @@ def test_stoploss_wide_spread_triggers_after_confirmation_window(tmp_path):
     assert abs(float(payload["data"]["trigger_price"]) - 0.95) < 1e-9
 
 
-def test_stoploss_wide_spread_force_trigger_bypasses_confirmation_window(tmp_path):
+def test_stoploss_wide_spread_force_trigger_requires_confirmation_window(tmp_path):
     manager = _build_stoploss_manager(
         tmp_path,
         stoploss_overrides={
             "min_age_minutes": 0.0,
-            "new_position_hard_grace_minutes": 5.0,
-            "new_position_spread_grace_minutes": 15.0,
+            "new_position_hard_grace_minutes": 0.0,
+            "new_position_spread_grace_minutes": 0.0,
         },
     )
     now = time.time()
@@ -5310,15 +5310,31 @@ def test_stoploss_wide_spread_force_trigger_bypasses_confirmation_window(tmp_pat
     try:
         manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now, "tick_size": 0.01}
         manager._run_stoploss_check(now)
-        manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now + 901.0, "tick_size": 0.01}
-        manager._run_stoploss_check(now + 901.0)
+        assert len(liq_calls) == 0
+        state = manager._stoploss_reentry_states["t1"]
+        assert state.get("last_error") == "stoploss age gate initialized"
+
+        manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now + 1.0, "tick_size": 0.01}
+        manager._run_stoploss_check(now + 1.0)
+        assert len(liq_calls) == 0
+        state = manager._stoploss_reentry_states["t1"]
+        assert int(state.get("wide_spread_stoploss_confirm_hits") or 0) == 1
+
+        manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now + 16.0, "tick_size": 0.01}
+        manager._run_stoploss_check(now + 16.0)
+        assert len(liq_calls) == 0
+        state = manager._stoploss_reentry_states["t1"]
+        assert int(state.get("wide_spread_stoploss_confirm_hits") or 0) == 2
+
+        manager._ws_cache["t1"] = {"best_bid": 0.89, "best_ask": 0.95, "updated_at": now + 31.0, "tick_size": 0.01}
+        manager._run_stoploss_check(now + 31.0)
     finally:
         autorun_mod._fetch_position_rows_from_data_api = old_fetch  # type: ignore[assignment]
 
     assert len(liq_calls) == 1
     assert liq_calls[0].get("reason") == "STOPLOSS_REENTRY"
     state = manager._stoploss_reentry_states["t1"]
-    assert int(state.get("wide_spread_stoploss_confirm_hits") or 0) == 0
+    assert int(state.get("wide_spread_stoploss_confirm_hits") or 0) == 3
     journal_path = manager.config.data_dir / "stoploss_event_journal.jsonl"
     payload = json.loads(journal_path.read_text(encoding="utf-8").strip().splitlines()[0])
     assert payload["data"]["wide_spread_force_bypass"] is True
