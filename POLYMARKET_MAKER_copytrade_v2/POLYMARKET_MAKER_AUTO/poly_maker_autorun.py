@@ -1190,6 +1190,11 @@ class GlobalConfig:
             "wide_spread_confirm_rounds", 3
         )
     )
+    stoploss_wide_spread_force_trigger_multiplier: float = float(
+        (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
+            "wide_spread_force_trigger_multiplier", 2.0
+        )
+    )
     stoploss_new_position_spread_grace_minutes: float = float(
         (DEFAULT_GLOBAL_CONFIG.get("stoploss") or {}).get(
             "new_position_spread_grace_minutes", 15.0
@@ -2116,6 +2121,18 @@ class GlobalConfig:
                         merged.get(
                             "stoploss_wide_spread_confirm_rounds",
                             cls.stoploss_wide_spread_confirm_rounds,
+                        ),
+                    )
+                ),
+            ),
+            stoploss_wide_spread_force_trigger_multiplier=max(
+                1.0,
+                float(
+                    stoploss_cfg.get(
+                        "wide_spread_force_trigger_multiplier",
+                        merged.get(
+                            "stoploss_wide_spread_force_trigger_multiplier",
+                            cls.stoploss_wide_spread_force_trigger_multiplier,
                         ),
                     )
                 ),
@@ -3443,6 +3460,28 @@ class AutoRunManager:
         state["wide_spread_stoploss_confirm_hits"] = int(hits)
         ready = hits >= required_hits and elapsed >= window_sec - 1e-12
         return hits, elapsed, ready
+
+    @staticmethod
+    def _has_pending_wide_spread_stoploss_confirmation(state: Dict[str, Any]) -> bool:
+        if not isinstance(state, dict) or not state:
+            return False
+        if int(state.get("wide_spread_stoploss_confirm_hits") or 0) > 0:
+            return True
+        return float(state.get("wide_spread_stoploss_first_ts") or 0.0) > 0.0
+
+    def _should_force_stoploss_on_wide_spread(
+        self,
+        *,
+        drawdown_pct: float,
+        threshold_pct: float,
+    ) -> bool:
+        trigger_multiplier = max(
+            1.0,
+            float(self.config.stoploss_wide_spread_force_trigger_multiplier),
+        )
+        effective_threshold = max(0.001, float(threshold_pct))
+        realized_drawdown = max(0.0, -float(drawdown_pct))
+        return realized_drawdown + 1e-12 >= effective_threshold * trigger_multiplier
 
     def _build_stoploss_reentry_band(
         self,
@@ -5411,7 +5450,31 @@ class AutoRunManager:
                     state_dirty = True
                 continue
 
-            if is_wide_spread:
+            force_stoploss_on_wide_spread = bool(is_wide_spread) and self._should_force_stoploss_on_wide_spread(
+                drawdown_pct=float(drawdown),
+                threshold_pct=float(threshold),
+            )
+
+            if force_stoploss_on_wide_spread:
+                if self._reset_wide_spread_stoploss_confirmation(state):
+                    state_dirty = True
+                state["last_error"] = (
+                    "wide spread stoploss force trigger "
+                    f"drawdown={abs(float(drawdown)):.3f} "
+                    f"threshold={float(threshold):.3f} "
+                    f"multiplier={float(self.config.stoploss_wide_spread_force_trigger_multiplier):.2f}"
+                )
+                print(
+                    f"[STOPLOSS][WIDE_SPREAD][FORCE_IOC] token={token_id[:20]}... "
+                    f"bid={float(state.get('last_stoploss_spread_bid') or 0.0):.4f} "
+                    f"ask={float(state.get('last_stoploss_spread_ask') or 0.0):.4f} "
+                    f"spread={float(state.get('last_stoploss_spread_pct') or 0.0):.3f} "
+                    f"drawdown={abs(float(drawdown)):.3f} "
+                    f"threshold={float(threshold):.3f} "
+                    f"multiplier={float(self.config.stoploss_wide_spread_force_trigger_multiplier):.2f}"
+                )
+                state_dirty = True
+            elif is_wide_spread:
                 state["stoploss_confirm_hits"] = 0
                 hits, elapsed, ready = self._advance_wide_spread_stoploss_confirmation(
                     state,
@@ -5442,7 +5505,10 @@ class AutoRunManager:
             elif self._reset_wide_spread_stoploss_confirmation(state):
                 state_dirty = True
 
-            hits = int(state.get("stoploss_confirm_hits") or 0) + 1
+            if force_stoploss_on_wide_spread:
+                hits = max(confirm_rounds, int(state.get("stoploss_confirm_hits") or 0))
+            else:
+                hits = int(state.get("stoploss_confirm_hits") or 0) + 1
             state["stoploss_confirm_hits"] = hits
             state_dirty = True
             if hits < confirm_rounds:
@@ -5463,6 +5529,7 @@ class AutoRunManager:
                     "target_size": float(pos_size),
                     "confirm_hits": int(hits),
                     "confirm_required": int(confirm_rounds),
+                    "wide_spread_force_bypass": bool(force_stoploss_on_wide_spread),
                     "threshold_pct": float(threshold),
                     "threshold_ticks": int(threshold_ticks),
                     "base_trigger_price": float(stoploss_trigger_price),
@@ -11382,6 +11449,8 @@ class AutoRunManager:
         state = self._stoploss_reentry_states.get(token_id) or {}
         if not isinstance(state, dict) or not state:
             return False
+        if self._has_pending_wide_spread_stoploss_confirmation(state):
+            return True
         state_name = str(state.get("state") or "").strip().upper()
         return state_name in {
             "STOPLOSS_EXITED_WAITING_WINDOW",
