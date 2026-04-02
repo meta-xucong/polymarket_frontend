@@ -75,6 +75,21 @@ run_as_app() {
   su -s /bin/bash "$APP_USER" -c "$(printf '%q ' "${cmd[@]}")"
 }
 
+ensure_git_checkout_writable() {
+  local git_dir="$APP_DIR/.git"
+  if [[ ! -d "$git_dir" ]]; then
+    return
+  fi
+
+  echo "[INFO] Normalizing git metadata ownership/permissions for $APP_USER"
+  chown -R "$APP_USER:$APP_USER" "$git_dir"
+  find "$git_dir" -type d -exec chmod u+rwx,go+rx {} \;
+  find "$git_dir" -type f -exec chmod u+rw,go+r {} \;
+  if [[ -d "$git_dir/hooks" ]]; then
+    find "$git_dir/hooks" -type f -exec chmod u+rwx,go+rx {} \;
+  fi
+}
+
 service_exists() {
   local service="$1"
   [[ "$(systemctl show "$service" --property LoadState --value 2>/dev/null || true)" != "not-found" ]]
@@ -105,6 +120,9 @@ if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
   echo "[ERROR] Missing virtualenv at $APP_DIR/.venv. Run deploy/debian_oneclick_install.sh first."
   exit 1
 fi
+
+step "Ensure git checkout metadata is writable by app user"
+ensure_git_checkout_writable
 
 step "Verify local checkout points to expected repository"
 current_url="$(run_as_app git -C "$APP_DIR" remote get-url origin)"
