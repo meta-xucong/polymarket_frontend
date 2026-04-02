@@ -7629,6 +7629,7 @@ class AutoRunManager:
                     self._restart_ws_subscription(self._ws_token_ids)
 
         # 检查缓存数据
+        tokens_to_recover: List[Tuple[str, str]] = []
         with self._ws_cache_lock:
             token_count = len(self._ws_cache)
             subscribed_count = len(self._ws_token_ids)
@@ -7685,7 +7686,7 @@ class AutoRunManager:
                     warning_tokens.append((token_id, age))
 
                 if token_id in self._ws_token_ids and age >= WS_STALE_RESUBSCRIBE_AFTER_SEC:
-                    self._recover_shared_ws_token(token_id, reason=f"stale_age:{int(age)}s")
+                    tokens_to_recover.append((token_id, f"stale_age:{int(age)}s"))
 
             # 清理过期/关闭的token
             if cleanup_tokens:
@@ -7704,6 +7705,9 @@ class AutoRunManager:
                 for token_id, age, reason in cleanup_tokens[:3]:
                     print(f"  - {token_id[:20]}...: {reason}")
                 self._ws_cache_dirty = True
+
+        for token_id, reason in tokens_to_recover:
+            self._recover_shared_ws_token(token_id, reason=reason)
 
             # 警告日志（降低频率：每60秒才打印一次）
             if not hasattr(self, '_last_warning_log'):
