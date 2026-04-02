@@ -83,11 +83,27 @@ class TotalLiquidationManager:
     _EXECUTION_MODE_LIQUIDATE_THEN_RESTART = "liquidate_then_restart"
     _EXECUTION_MODE_RESTART_ONLY = "restart_only"
 
+    @staticmethod
+    def _resolve_copytrade_dir(project_root: Path) -> Path:
+        instance_root = str(os.getenv("POLY_INSTANCE_ROOT") or "").strip()
+        if instance_root:
+            base = Path(instance_root).expanduser()
+            candidates = (
+                base / "POLYMARKET_MAKER_copytrade_v2" / "copytrade",
+                base / "POLYMARKET_MAKER_copytrade" / "POLYMARKET_MAKER_copytrade_v2" / "copytrade",
+            )
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+            return candidates[0]
+        return project_root.parent / "copytrade"
+
     def __init__(self, cfg: Any, project_root: Path):
         self.cfg = LiquidationConfig.from_global_config(cfg)
         self.project_root = project_root
+        self.copytrade_dir = self._resolve_copytrade_dir(project_root)
         self.state_path = cfg.data_dir / "total_liquidation_state.json"
-        self.blacklist_path = project_root.parent / "copytrade" / "liquidation_blacklist.json"
+        self.blacklist_path = self.copytrade_dir / "liquidation_blacklist.json"
         self._running = False
 
         self._idle_since: Optional[float] = None
@@ -1073,9 +1089,8 @@ class TotalLiquidationManager:
         return 0.0
 
     def _load_copytrade_token_scope(self) -> set[str]:
-        copytrade_dir = self.project_root.parent / "copytrade"
-        tokens_path = copytrade_dir / "tokens_from_copytrade.json"
-        signals_path = copytrade_dir / "copytrade_sell_signals.json"
+        tokens_path = self.copytrade_dir / "tokens_from_copytrade.json"
+        signals_path = self.copytrade_dir / "copytrade_sell_signals.json"
         token_ids: set[str] = set()
 
         for path, key in ((tokens_path, "tokens"), (signals_path, "sell_tokens")):
@@ -1971,7 +1986,7 @@ class TotalLiquidationManager:
             raise
 
     def _reset_copytrade_state_files(self) -> None:
-        copytrade_dir = self.project_root.parent / "copytrade"
+        copytrade_dir = self.copytrade_dir
         copytrade_dir.mkdir(parents=True, exist_ok=True)
 
         targets = {

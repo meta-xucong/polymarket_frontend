@@ -2,6 +2,7 @@ import sys
 import types
 import json
 import time
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,22 @@ def test_default_mode_is_classic():
     manager = _build_manager(cfg)
     assert manager._is_aggressive_mode() is False
     assert manager._burst_slots() == 10
+
+
+def test_instance_mode_defaults_copytrade_paths(monkeypatch, tmp_path):
+    instance_root = tmp_path / "instance"
+    v2_root = instance_root / "POLYMARKET_MAKER_copytrade_v2"
+    (v2_root / "copytrade").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("POLY_INSTANCE_ROOT", str(instance_root))
+
+    cfg = GlobalConfig.from_dict({})
+
+    assert cfg.copytrade_tokens_path == v2_root / "copytrade" / "tokens_from_copytrade.json"
+    assert cfg.copytrade_sell_signals_path == v2_root / "copytrade" / "copytrade_sell_signals.json"
+    assert cfg.copytrade_blacklist_path == v2_root / "copytrade" / "liquidation_blacklist.json"
+    assert cfg.stoploss_reentry_state_path == v2_root / "copytrade" / "stoploss_reentry_state.json"
+    assert cfg.stoploss_reentry_state_backup_path == v2_root / "copytrade" / "stoploss_reentry_state.bak.json"
 
 
 def test_compute_new_topics_dedupes_token_ids():

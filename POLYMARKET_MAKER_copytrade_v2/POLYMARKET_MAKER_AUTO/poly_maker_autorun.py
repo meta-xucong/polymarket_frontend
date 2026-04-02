@@ -70,6 +70,29 @@ def _resolve_project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _resolve_instance_v2_root() -> Optional[Path]:
+    instance_root = str(os.getenv("POLY_INSTANCE_ROOT") or "").strip()
+    if not instance_root:
+        return None
+
+    base = Path(instance_root).expanduser()
+    candidates = (
+        base / "POLYMARKET_MAKER_copytrade_v2",
+        base / "POLYMARKET_MAKER_copytrade" / "POLYMARKET_MAKER_copytrade_v2",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _default_copytrade_path(filename: str) -> Path:
+    instance_v2_root = _resolve_instance_v2_root()
+    if instance_v2_root is not None:
+        return instance_v2_root / "copytrade" / filename
+    return PROJECT_ROOT.parent / "copytrade" / filename
+
+
 PROJECT_ROOT = _resolve_project_root()
 MAKER_ROOT = PROJECT_ROOT / "POLYMARKET_MAKER"
 if str(MAKER_ROOT) not in sys.path:
@@ -114,15 +137,9 @@ DEFAULT_GLOBAL_CONFIG = {
     "log_dir": str(PROJECT_ROOT / "logs" / "autorun"),
     "data_dir": str(PROJECT_ROOT / "data"),
     "handled_topics_path": str(PROJECT_ROOT / "data" / "handled_topics.json"),
-    "copytrade_tokens_path": str(
-        PROJECT_ROOT.parent / "copytrade" / "tokens_from_copytrade.json"
-    ),
-    "copytrade_sell_signals_path": str(
-        PROJECT_ROOT.parent / "copytrade" / "copytrade_sell_signals.json"
-    ),
-    "copytrade_blacklist_path": str(
-        PROJECT_ROOT.parent / "copytrade" / "liquidation_blacklist.json"
-    ),
+    "copytrade_tokens_path": str(_default_copytrade_path("tokens_from_copytrade.json")),
+    "copytrade_sell_signals_path": str(_default_copytrade_path("copytrade_sell_signals.json")),
+    "copytrade_blacklist_path": str(_default_copytrade_path("liquidation_blacklist.json")),
     "process_start_retries": 1,
     "process_retry_delay_sec": 2.0,
     "process_graceful_timeout_sec": 5.0,
@@ -1321,19 +1338,19 @@ class GlobalConfig:
             or PROJECT_ROOT / "data" / "handled_topics.json"
         )
         copytrade_tokens_path = Path(
-            merged.get("copytrade_tokens_path")
+            data.get("copytrade_tokens_path")
             or paths.get("copytrade_tokens_file")
-            or PROJECT_ROOT.parent / "copytrade" / "tokens_from_copytrade.json"
+            or _default_copytrade_path("tokens_from_copytrade.json")
         )
         copytrade_sell_signals_path = Path(
-            merged.get("copytrade_sell_signals_path")
+            data.get("copytrade_sell_signals_path")
             or paths.get("copytrade_sell_signals_file")
-            or PROJECT_ROOT.parent / "copytrade" / "copytrade_sell_signals.json"
+            or _default_copytrade_path("copytrade_sell_signals.json")
         )
         copytrade_blacklist_path = Path(
-            merged.get("copytrade_blacklist_path")
+            data.get("copytrade_blacklist_path")
             or paths.get("copytrade_blacklist_file")
-            or PROJECT_ROOT.parent / "copytrade" / "liquidation_blacklist.json"
+            or _default_copytrade_path("liquidation_blacklist.json")
         )
         runtime_status_path = Path(
             merged.get("runtime_status_path")
@@ -1347,13 +1364,15 @@ class GlobalConfig:
         )
         stoploss_reentry_state_path = Path(
             paths.get("stoploss_reentry_state_file")
+            or data.get("stoploss_reentry_state_path")
             or flat_overrides.get("stoploss_reentry_state_path")
-            or PROJECT_ROOT.parent / "copytrade" / "stoploss_reentry_state.json"
+            or _default_copytrade_path("stoploss_reentry_state.json")
         )
         stoploss_reentry_state_backup_path = Path(
             paths.get("stoploss_reentry_state_backup_file")
+            or data.get("stoploss_reentry_state_backup_path")
             or flat_overrides.get("stoploss_reentry_state_backup_path")
-            or PROJECT_ROOT.parent / "copytrade" / "stoploss_reentry_state.bak.json"
+            or _default_copytrade_path("stoploss_reentry_state.bak.json")
         )
 
         ws_ping_interval_sec = max(
