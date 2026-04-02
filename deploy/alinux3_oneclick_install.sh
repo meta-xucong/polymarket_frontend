@@ -121,7 +121,9 @@ fi
 
 step "Install Python dependencies"
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-180}"
-run_as_app "$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
+if ! run_as_app "$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel; then
+  echo "[WARN] Failed to upgrade pip/setuptools/wheel, continue with bundled versions"
+fi
 run_as_app "$APP_DIR/.venv/bin/pip" install \
   requests \
   pyyaml \
