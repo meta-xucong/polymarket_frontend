@@ -121,6 +121,16 @@ if [[ ! -d "$APP_DIR/.venv" ]]; then
   run_as_app python3 -m venv "$APP_DIR/.venv"
 fi
 
+step "Ensure source runtime directories are writable by app user"
+mkdir -p \
+  "$APP_DIR/$V2_DIR_REL/copytrade/logs" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/data" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun"
+chown -R "$APP_USER:$APP_USER" \
+  "$APP_DIR/$V2_DIR_REL/copytrade" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/data" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs"
+
 step "Install Python dependencies"
 run_as_app "$APP_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
 run_as_app "$APP_DIR/.venv/bin/pip" install \

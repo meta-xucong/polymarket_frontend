@@ -20,6 +20,35 @@ from smartmoney_query.api_client import DataApiClient
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("copytrade_config.json")
 
 
+def _resolve_runtime_mirror_paths(path: Path) -> List[Path]:
+    paths = [path]
+    source_root_raw = str(os.getenv("POLY_APP_ROOT") or "").strip()
+    instance_root_raw = str(os.getenv("POLY_INSTANCE_ROOT") or "").strip()
+    if not source_root_raw or not instance_root_raw:
+        return paths
+
+    try:
+        source_root = Path(source_root_raw).resolve()
+        instance_root = Path(instance_root_raw).resolve()
+        if source_root == instance_root:
+            return paths
+        source_copytrade_dir = source_root / "POLYMARKET_MAKER_copytrade_v2" / "copytrade"
+        try:
+            relative_path = path.resolve().relative_to(instance_root)
+        except ValueError:
+            relative_path = None
+
+        if relative_path is not None:
+            relative_parts = relative_path.parts
+            if relative_parts[:2] in {("v2", "copytrade"), ("POLYMARKET_MAKER_copytrade_v2", "copytrade")}:
+                mirror = source_copytrade_dir / Path(*relative_parts[2:])
+                if mirror not in paths:
+                    paths.append(mirror)
+    except Exception:
+        return paths
+    return paths
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -52,6 +81,19 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def _write_json_with_mirrors(path: Path, payload: Dict[str, Any]) -> None:
+    targets = _resolve_runtime_mirror_paths(path)
+    if not targets:
+        return
+    _write_json(targets[0], payload)
+    for target in targets[1:]:
+        try:
+            _write_json(target, payload)
+        except BaseException:
+            # Mirror write failures must not block the live runtime artifact.
+            continue
 
 
 def _setup_logger(log_dir: Path) -> logging.Logger:
@@ -257,7 +299,7 @@ def _write_sell_signals(
         "sell_tokens": tokens,
         "archived_sell_tokens": archived_tokens,
     }
-    _write_json(path, payload)
+    _write_json_with_mirrors(path, payload)
 
 
 def _write_tokens(
@@ -277,7 +319,7 @@ def _write_tokens(
         "tokens": tokens,
         "archived_tokens": archived_tokens,
     }
-    _write_json(path, payload)
+    _write_json_with_mirrors(path, payload)
 
 
 def _archive_record(
@@ -540,7 +582,7 @@ def run_once(
     else:
         _write_sell_signals(sell_signal_path, sell_map, archived_sell_map)
 
-    _write_json(state_path, state)
+    _write_json_with_mirrors(state_path, state)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:

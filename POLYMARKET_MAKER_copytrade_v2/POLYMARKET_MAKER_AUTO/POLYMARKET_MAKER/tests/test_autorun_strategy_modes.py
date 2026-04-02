@@ -2343,6 +2343,88 @@ def test_advance_shared_cycle_state_after_sell_updates_round_cooldown_and_thresh
     assert payload["token_states"]["t1"]["cycle_round"] == 2
 
 
+def test_advance_shared_cycle_state_after_sell_is_idempotent_when_cycle_already_closed(tmp_path):
+    state_path = tmp_path / "token_cycle_gate.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "",
+                "token_states": {
+                    "t1": {
+                        "cycle_round": 3,
+                        "next_buy_allowed_ts": 3600.0,
+                        "next_drop_pct": 0.06,
+                        "local_cycle_status": "cycle_closed",
+                        "last_cycle_completed_ts": 100.0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    record = _advance_shared_cycle_state_after_sell(
+        "t1",
+        state_path,
+        current_drop_pct=0.06,
+        current_profit_pct=0.01,
+        enable_incremental_drop_pct=True,
+        incremental_drop_pct_step=0.002,
+        incremental_drop_pct_cap=0.20,
+        enable_incremental_profit_pct=False,
+        incremental_profit_pct_step=0.0,
+        incremental_profit_pct_cap=None,
+        now_ts=120.0,
+    )
+
+    assert record["cycle_round"] == 3
+    assert abs(float(record["next_buy_allowed_ts"]) - 3600.0) < 1e-9
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["token_states"]["t1"]["cycle_round"] == 3
+
+
+def test_advance_shared_cycle_state_after_sell_clamps_absurd_future_wait(tmp_path):
+    state_path = tmp_path / "token_cycle_gate.json"
+    record = _advance_shared_cycle_state_after_sell(
+        "t1",
+        state_path,
+        current_drop_pct=0.05,
+        current_profit_pct=0.01,
+        enable_incremental_drop_pct=False,
+        incremental_drop_pct_step=0.0,
+        incremental_drop_pct_cap=None,
+        enable_incremental_profit_pct=False,
+        incremental_profit_pct_step=0.0,
+        incremental_profit_pct_cap=None,
+        now_ts=100.0,
+    )
+
+    assert record["cycle_round"] == 1
+    assert float(record["next_buy_allowed_ts"]) <= 100.0 + (24.0 * 60.0 * 60.0)
+
+
+def test_bootstrap_ws_cache_from_clob_book(tmp_path, monkeypatch):
+    cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
+    manager = _build_manager(cfg)
+    monkeypatch.setattr(
+        manager,
+        "_fetch_clob_top_of_book",
+        lambda token_id: {
+            "ok": True,
+            "bid": 0.41,
+            "ask": 0.43,
+            "tick_size": 0.01,
+            "source": "clob_book",
+        },
+    )
+
+    assert manager._bootstrap_ws_cache_from_clob_book("12345678901234567890") is True
+    cached = manager._ws_cache["12345678901234567890"]
+    assert abs(float(cached["best_bid"]) - 0.41) < 1e-9
+    assert abs(float(cached["best_ask"]) - 0.43) < 1e-9
+    assert cached["source"] == "clob_book_bootstrap"
+
+
 def test_save_token_cycle_states_preserves_newer_disk_cycle_fields(tmp_path):
     cfg = GlobalConfig.from_dict({"paths": {"data_directory": str(tmp_path / "data")}})
     manager = _build_manager(cfg)

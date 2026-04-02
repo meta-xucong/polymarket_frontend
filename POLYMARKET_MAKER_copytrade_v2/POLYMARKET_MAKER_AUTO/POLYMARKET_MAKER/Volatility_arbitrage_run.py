@@ -195,6 +195,53 @@ def _normalize_cycle_gate_ratio(value: Any) -> Optional[float]:
     return numeric
 
 
+MAX_CYCLE_GATE_ROUND = 16
+MAX_CYCLE_GATE_COOLDOWN_MINUTES = 24.0 * 60.0
+MAX_CYCLE_GATE_FUTURE_SECONDS = MAX_CYCLE_GATE_COOLDOWN_MINUTES * 60.0
+
+
+def _sanitize_cycle_gate_timestamp(value: Any, *, now_ts: Optional[float] = None) -> float:
+    now = float(time.time() if now_ts is None else now_ts)
+    try:
+        numeric = max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    max_allowed = now + MAX_CYCLE_GATE_FUTURE_SECONDS
+    if numeric > max_allowed:
+        return max_allowed
+    return numeric
+
+
+def _sanitize_cycle_gate_record(
+    raw: Any,
+    *,
+    now_ts: Optional[float] = None,
+) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    now = float(time.time() if now_ts is None else now_ts)
+    record = dict(raw)
+    try:
+        cycle_round = max(0, int(record.get("cycle_round", 0) or 0))
+    except (TypeError, ValueError):
+        cycle_round = 0
+    record["cycle_round"] = min(cycle_round, MAX_CYCLE_GATE_ROUND)
+    record["next_buy_allowed_ts"] = _sanitize_cycle_gate_timestamp(
+        record.get("next_buy_allowed_ts", 0.0),
+        now_ts=now,
+    )
+    try:
+        record["last_cycle_completed_ts"] = max(
+            0.0, float(record.get("last_cycle_completed_ts", 0.0) or 0.0)
+        )
+    except (TypeError, ValueError):
+        record["last_cycle_completed_ts"] = 0.0
+    status = str(record.get("local_cycle_status") or "").strip().lower()
+    if status:
+        record["local_cycle_status"] = status
+    return record
+
+
 def _is_buy_stage_active_for_inactive_release(
     *,
     current_state: Any,
@@ -263,11 +310,26 @@ def _advance_shared_cycle_state_after_sell(
     current = token_states.get(token_id)
     if not isinstance(current, dict):
         current = {}
+    current = _sanitize_cycle_gate_record(current, now_ts=now)
+    current_status = str(current.get("local_cycle_status") or "").strip().lower()
+    current_next_buy_ts = float(current.get("next_buy_allowed_ts", 0.0) or 0.0)
+    if current_status == "cycle_closed" and current_next_buy_ts > now:
+        token_states[str(token_id)] = current
+        payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        payload["token_states"] = token_states
+        _atomic_write_json(state_path, payload)
+        return current
 
-    current_round = max(0, int(current.get("cycle_round", 0) or 0))
-    next_round = current_round + 1
-    cooldown_minutes = float(2 ** max(next_round - 1, 0))
-    next_buy_allowed_ts = now + cooldown_minutes * 60.0
+    current_round = min(MAX_CYCLE_GATE_ROUND, max(0, int(current.get("cycle_round", 0) or 0)))
+    next_round = min(MAX_CYCLE_GATE_ROUND, current_round + 1)
+    cooldown_minutes = min(
+        float(2 ** max(next_round - 1, 0)),
+        MAX_CYCLE_GATE_COOLDOWN_MINUTES,
+    )
+    next_buy_allowed_ts = _sanitize_cycle_gate_timestamp(
+        now + cooldown_minutes * 60.0,
+        now_ts=now,
+    )
 
     next_drop_pct = _normalize_cycle_gate_ratio(current_drop_pct)
     if enable_incremental_drop_pct and next_drop_pct is not None and incremental_drop_pct_step > 0:
@@ -3122,7 +3184,7 @@ def main(run_config: Optional[Dict[str, Any]] = None):
         if not isinstance(token_states, dict):
             return {}
         state = token_states.get(token_id)
-        return dict(state) if isinstance(state, dict) else {}
+        return _sanitize_cycle_gate_record(state)
 
     latest: Dict[str, Dict[str, Any]] = {}
     action_queue: Queue[Action] = Queue()

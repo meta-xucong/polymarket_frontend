@@ -49,11 +49,22 @@ def _resolve_overlay_paths(
     source_path: Path,
     instance_candidates: List[Path],
 ) -> Tuple[Path, Path]:
-    read_path = source_path
-    for candidate in instance_candidates:
-        if candidate.exists():
-            read_path = candidate
-            break
+    existing_paths = [path for path in instance_candidates if path.exists()]
+    if source_path.exists():
+        existing_paths.append(source_path)
+
+    if existing_paths:
+        def _path_sort_key(path: Path) -> tuple[float, int]:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            is_instance = 1 if path in instance_candidates else 0
+            return (mtime, is_instance)
+
+        read_path = max(existing_paths, key=_path_sort_key)
+    else:
+        read_path = source_path
 
     if _instance_mode_enabled():
         write_path = next((path for path in instance_candidates if path.exists()), instance_candidates[0])
@@ -181,6 +192,27 @@ def _v3_accounts_paths() -> Tuple[Path, Path]:
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _select_freshest_existing_path(paths: List[Path]) -> Path:
+    existing = [path for path in paths if path.exists()]
+    if not existing:
+        return paths[0]
+
+    def _sort_key(path: Path) -> tuple[float, int]:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        path_str = str(path).replace("\\", "/")
+        instance_hint = 1 if ("/v2/" in path_str or "/POLYMARKET_MAKER_copytrade_v2/" in path_str) and str(resolve_instance_root()).replace("\\", "/") in path_str else 0
+        return (mtime, instance_hint)
+
+    return max(existing, key=_sort_key)
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"JSON object expected: {path}")
@@ -605,9 +637,18 @@ def _latest_copytrade_log_path() -> Path | None:
 
 
 def get_runtime_payload() -> Dict[str, Any]:
-    status = _read_json(_status_paths()[0])
-    tokens = _read_json(_tokens_paths()[0])
-    copytrade_state = _read_json(_copytrade_state_paths()[0])
+    status_path = _select_freshest_existing_path(
+        [*_status_paths(), STATUS_PATH, resolve_v2_root() / "POLYMARKET_MAKER_AUTO" / "data" / "autorun_status.json"]
+    )
+    tokens_path = _select_freshest_existing_path(
+        [*_tokens_paths(), TOKENS_PATH, resolve_v2_root() / "copytrade" / "tokens_from_copytrade.json"]
+    )
+    copytrade_state_path = _select_freshest_existing_path(
+        [*_copytrade_state_paths(), COPYTRADE_STATE_PATH, resolve_v2_root() / "copytrade" / "copytrade_state.json"]
+    )
+    status = _read_json(status_path)
+    tokens = _read_json(tokens_path)
+    copytrade_state = _read_json(copytrade_state_path)
     active_tokens = tokens.get("tokens") if isinstance(tokens.get("tokens"), list) else []
     autorun_log_path = _latest_autorun_log_path()
     copytrade_log_path = _latest_copytrade_log_path()
@@ -615,7 +656,10 @@ def get_runtime_payload() -> Dict[str, Any]:
     return {
         "autorun_status": status,
         "active_token_count": len(active_tokens),
+        "active_token_source": str(tokens_path),
+        "autorun_status_source": str(status_path),
         "copytrade_updated_at": copytrade_state.get("updated_at"),
+        "copytrade_state_source": str(copytrade_state_path),
         "copytrade_log_tail": _read_log_tail(copytrade_log_path)
         if copytrade_log_path
         else _read_log_tail_with_fallback([root / "copytrade" / "copytrade_systemd.log" for root in v2_roots]),

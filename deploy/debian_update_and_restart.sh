@@ -151,6 +151,16 @@ if ! run_as_app "$APP_DIR/.venv/bin/pip" install poly-eip712-structs; then
   run_as_app "$APP_DIR/.venv/bin/pip" install poly_eip712_structs
 fi
 
+step "Ensure source runtime directories are writable by app user"
+mkdir -p \
+  "$APP_DIR/$V2_DIR_REL/copytrade/logs" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/data" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs/autorun"
+chown -R "$APP_USER:$APP_USER" \
+  "$APP_DIR/$V2_DIR_REL/copytrade" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/data" \
+  "$APP_DIR/$V2_DIR_REL/POLYMARKET_MAKER_AUTO/logs"
+
 step "Sanity check imports"
 run_as_app "$APP_DIR/.venv/bin/python" - <<'PY'
 import requests, yaml, websocket

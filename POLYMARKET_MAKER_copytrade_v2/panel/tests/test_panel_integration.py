@@ -49,6 +49,25 @@ class PanelIntegrationTests(unittest.TestCase):
         expected_account = self.instance_dir / "v2" / "account.json"
         self.assertTrue(expected_account.exists())
 
+    def test_runtime_payload_reports_instance_sources(self) -> None:
+        tokens_path = self.instance_dir / "v2" / "copytrade" / "tokens_from_copytrade.json"
+        tokens_path.parent.mkdir(parents=True, exist_ok=True)
+        tokens_path.write_text(
+            json.dumps({"tokens": [{"token_id": "1"}, {"token_id": "2"}]}),
+            encoding="utf-8",
+        )
+        state_path = self.instance_dir / "v2" / "copytrade" / "copytrade_state.json"
+        state_path.write_text(json.dumps({"updated_at": "now"}), encoding="utf-8")
+        status_path = self.instance_dir / "v2" / "POLYMARKET_MAKER_AUTO" / "data" / "autorun_status.json"
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        status_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+        payload = self.config_store.get_runtime_payload()
+        self.assertEqual(payload["active_token_count"], 2)
+        self.assertEqual(Path(payload["active_token_source"]).resolve(), tokens_path.resolve())
+        self.assertEqual(Path(payload["copytrade_state_source"]).resolve(), state_path.resolve())
+        self.assertEqual(Path(payload["autorun_status_source"]).resolve(), status_path.resolve())
+
     def test_auth_guard_and_runtime_api(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))

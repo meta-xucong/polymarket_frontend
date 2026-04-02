@@ -339,6 +339,9 @@ CLOB_BOOK_PROBE_TIMEOUT_SEC = 5.0
 CLOB_BOOK_PROBE_CACHE_TTL_SEC = 300.0
 GAMMA_MARKET_PROBE_TIMEOUT_SEC = 10.0
 GAMMA_MARKET_CACHE_TTL_SEC = 300.0
+MAX_CYCLE_GATE_ROUND = 16
+MAX_CYCLE_GATE_COOLDOWN_MINUTES = 24.0 * 60.0
+MAX_CYCLE_GATE_FUTURE_SECONDS = MAX_CYCLE_GATE_COOLDOWN_MINUTES * 60.0
 
 
 class _TeeStream:
@@ -2605,17 +2608,28 @@ class AutoRunManager:
         return max(0.0, float(value))
 
     @staticmethod
+    def _sanitize_cycle_gate_timestamp(raw_value: Any, *, now_ts: Optional[float] = None) -> float:
+        now = float(time.time() if now_ts is None else now_ts)
+        try:
+            value = max(0.0, float(raw_value or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        return min(value, now + MAX_CYCLE_GATE_FUTURE_SECONDS)
+
+    @staticmethod
     def _normalize_cycle_state_record(raw: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(raw, dict):
             return None
+        now = time.time()
         try:
             cycle_round = max(0, int(raw.get("cycle_round", 0) or 0))
         except (TypeError, ValueError):
             cycle_round = 0
-        try:
-            next_buy_allowed_ts = max(0.0, float(raw.get("next_buy_allowed_ts", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            next_buy_allowed_ts = 0.0
+        cycle_round = min(cycle_round, MAX_CYCLE_GATE_ROUND)
+        next_buy_allowed_ts = AutoRunManager._sanitize_cycle_gate_timestamp(
+            raw.get("next_buy_allowed_ts", 0.0),
+            now_ts=now,
+        )
         next_drop_pct = AutoRunManager._normalize_ratio_value(raw.get("next_drop_pct"))
         next_profit_pct = AutoRunManager._normalize_ratio_value(raw.get("next_profit_pct"))
         try:
@@ -4087,10 +4101,16 @@ class AutoRunManager:
         current_status = str(current.get("local_cycle_status") or "").strip().lower()
         if current_status == "cycle_closed":
             return
-        current_round = max(0, int(current.get("cycle_round", 0) or 0))
-        next_round = current_round + 1
-        cooldown_minutes = float(2 ** max(next_round - 1, 0))
-        next_buy_allowed_ts = now + cooldown_minutes * 60.0
+        current_round = min(MAX_CYCLE_GATE_ROUND, max(0, int(current.get("cycle_round", 0) or 0)))
+        next_round = min(MAX_CYCLE_GATE_ROUND, current_round + 1)
+        cooldown_minutes = min(
+            float(2 ** max(next_round - 1, 0)),
+            MAX_CYCLE_GATE_COOLDOWN_MINUTES,
+        )
+        next_buy_allowed_ts = self._sanitize_cycle_gate_timestamp(
+            now + cooldown_minutes * 60.0,
+            now_ts=now,
+        )
         current_drop = self._resolve_current_drop_pct_for_cycle(token_id, run_cfg)
         step, cap = self._resolve_drop_step_and_cap(run_cfg)
         next_drop: Optional[float] = current_drop
@@ -8131,6 +8151,34 @@ class AutoRunManager:
         }
         return ok, reason
 
+    def _bootstrap_ws_cache_from_clob_book(self, token_id: str) -> bool:
+        quote = self._fetch_clob_top_of_book(token_id)
+        if not bool(quote.get("ok", False)):
+            return False
+        bid = _coerce_float(quote.get("bid"))
+        ask = _coerce_float(quote.get("ask"))
+        if bid is None and ask is None:
+            return False
+        mid = ((bid + ask) / 2.0) if bid is not None and ask is not None else (bid or ask or 0.0)
+        with self._ws_cache_lock:
+            prev = dict(self._ws_cache.get(token_id) or {})
+            seq = int(prev.get("seq", 0) or 0) + 1
+            self._ws_cache[token_id] = {
+                **prev,
+                "seq": seq,
+                "updated_at": time.time(),
+                "source": "clob_book_bootstrap",
+                "best_bid": bid,
+                "best_ask": ask,
+                "mid_price": mid,
+                "last_trade_price": _coerce_float(prev.get("last_trade_price")) or mid,
+            }
+            self._ws_cache_dirty = True
+        self._shared_ws_wait_failures[token_id] = 0
+        self._shared_ws_paused_until.pop(token_id, None)
+        self._shared_ws_wait_timeout_events[token_id] = []
+        return True
+
     def _schedule_pending_topics(self) -> None:
         if self._is_buy_paused_by_balance():
             # 低余额时：只defer无持仓的token，保留有持仓的可卖出
@@ -8231,6 +8279,15 @@ class AutoRunManager:
             with self._ws_cache_lock:
                 cached = self._ws_cache.get(topic_id)
             if not cached:
+                if self._bootstrap_ws_cache_from_clob_book(topic_id):
+                    with self._ws_cache_lock:
+                        cached = self._ws_cache.get(topic_id)
+                    if cached:
+                        waited = now - self._shared_ws_pending_since.pop(topic_id, now)
+                        print(
+                            f"[WS][READY] topic={topic_id[:8]}... 缓存就绪"
+                            f" (等待了{waited:.1f}s, source=clob_book_bootstrap)"
+                        )
                 if self.config.ws_ready_use_confirmed and self._is_ws_confirmed(topic_id):
                     grace_sec = max(0.0, float(self.config.ws_ready_confirm_grace_sec))
                     pending_since = self._shared_ws_pending_since.setdefault(topic_id, now)
