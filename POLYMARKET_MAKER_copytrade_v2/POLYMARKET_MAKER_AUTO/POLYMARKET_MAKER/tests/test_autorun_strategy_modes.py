@@ -261,6 +261,62 @@ def test_refresh_topics_retries_startup_sync_and_purges_runtime_state(tmp_path):
     assert "keep_token" in manager._position_snapshot_cache
 
 
+def test_recover_shared_ws_token_bootstraps_cache_before_resubscribe(tmp_path):
+    cfg = GlobalConfig.from_dict({})
+    manager = _build_manager(cfg)
+    manager._bootstrap_ws_cache_from_clob_book = lambda token_id: True  # type: ignore[assignment]
+
+    calls = []
+
+    class _Client:
+        def resubscribe(self, token_ids):
+            calls.append(list(token_ids))
+
+    manager._ws_client = _Client()  # type: ignore[assignment]
+
+    recovered = manager._recover_shared_ws_token("token-a", reason="unit_test")
+
+    assert recovered is True
+    assert calls == []
+    with manager._ws_cache_lock:
+        # bootstrap helper is stubbed, so cache content is irrelevant here
+        pass
+
+
+def test_health_check_resubscribes_stale_subscribed_token_when_bootstrap_fails(tmp_path):
+    cfg = GlobalConfig.from_dict({})
+    manager = _build_manager(cfg)
+    now = time.time()
+    token_id = "token-stale"
+    manager._ws_token_ids = [token_id]
+    manager._bootstrap_ws_cache_from_clob_book = lambda _token_id: False  # type: ignore[assignment]
+
+    calls = []
+
+    class _Client:
+        def is_connected(self):
+            return True
+
+        def get_stats(self):
+            return {"subscribed_tokens": 1, "confirmed_tokens": 0, "pending_subscribe": 0}
+
+        def resubscribe(self, token_ids):
+            calls.append(list(token_ids))
+
+    manager._ws_client = _Client()  # type: ignore[assignment]
+    with manager._ws_cache_lock:
+        manager._ws_cache[token_id] = {
+            "updated_at": now - (autorun_mod.WS_STALE_RESUBSCRIBE_AFTER_SEC + 5.0),
+            "best_bid": 0.4,
+            "best_ask": 0.5,
+            "seq": 1,
+        }
+
+    manager._health_check()
+
+    assert calls == [[token_id]]
+
+
 def test_sync_startup_sell_with_position_triggers_exit_cleanup_path(tmp_path):
     copytrade_dir = tmp_path / "copytrade"
     copytrade_dir.mkdir(parents=True, exist_ok=True)
