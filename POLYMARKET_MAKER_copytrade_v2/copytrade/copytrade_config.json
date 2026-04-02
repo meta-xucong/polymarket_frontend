@@ -16,6 +16,51 @@
       "account": "0xe52c0a1327a12edc7bd54ea6f37ce00a4ca96924",
       "min_size": 5.0,
       "enabled": true
+    },
+    {
+      "account": "0x9dfe2f73d3c988a9d69df8fa0beb85651340b3dd",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0x9238743eeba8bbfe9e85ac7ba2e1e3d77877b73e",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0xd5b97d08ec6098407bfbf66c2786ccc9967fe44e",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0x5095e97281f28d4d8549fd3834802c24cbb793ee",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0x41583f2efc720b8e2682750fffb67f2806fece9f",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0xd66f79a8d19d4223b6c70dd4e620d4875501a19b",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0xe732156a2d84cdfb4de831d3f11a22899e49898f",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0x1aeebd7b0eb92037a630004f8eabc0759c36c139",
+      "min_size": 5.0,
+      "enabled": true
+    },
+    {
+      "account": "0x48e7ca9d4754021dc8b32adcaec0234dd6c9d5f8",
+      "min_size": 5.0,
+      "enabled": true
     }
   ]
 }
